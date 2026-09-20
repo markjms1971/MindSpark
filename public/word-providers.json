@@ -1,0 +1,14 @@
+[
+  {
+    "id": "randomwords",
+    "name": "Random Words API",
+    "url": "https://random-words-api.vercel.app/word",
+    "parser": "randomwords"
+  },
+  {
+    "id": "randomword",
+    "name": "Random Word",
+    "url": "https://random-word-api.herokuapp.com/word",
+    "parser": "randomword"
+  }
+]

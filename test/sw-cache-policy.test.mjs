@@ -77,7 +77,7 @@ describe('service worker caching policy', () => {
     // The reason this file exists. These are shipped DATA with fixed URLs, so
     // cache-first pinned them to whatever was current when a client first
     // loaded - the same trap as app.js, one size down.
-    for (const p of ['/quotes.json', '/quote-providers.json', '/demo-map.json']) {
+    for (const p of ['/quotes.json', '/quote-providers.json', '/words.json', '/word-providers.json', '/demo-map.json']) {
       test(`${p} prefers the network (bundled data, not an immutable asset)`, async () => {
         assert.equal(await resolve(p), 'NETWORK');
       });
