@@ -14,8 +14,8 @@
  *     risk: it silently shipped a stale app.js and made a deployed bug fix
  *     look like it had not worked.
  *   - Bundled DATA (json) is network-first for the same reason. quotes.json,
- *     quote-providers.json and demo-map.json have fixed URLs too, so serving
- *     them cache-first pinned every client to whatever shipped the day it first
+ *     quote-providers.json, words.json and word-providers.json have fixed URLs too,
+ *     so serving them cache-first pinned every client to whatever shipped the day it first
  *     loaded them - the same trap as app.js, one size down.
  *   - Only genuinely immutable assets (icons) stay cache-first.
  *   - /api/* and cross-origin requests are never touched. Map data lives in
@@ -23,7 +23,7 @@
  *     be actively harmful, not merely unhelpful.
  *   - Only GET is handled. Anything else falls through to the network.
  */
-const CACHE = 'mindspark-shell-v2';   // bumped: v1 could pin clients to a stale app.js
+const CACHE = 'mindspark-shell-v3';   // bumped: v2 had stale CSP, v1 could pin clients to a stale app.js
 // The app's own path prefix ('/' at the root, '/MindSpark/' on GitHub Pages,
 // '/mindspark/' behind a reverse proxy). The API and health probe live under
 // it, and the app resolves them the same way (appUrl() in app.js).
@@ -37,6 +37,8 @@ const SHELL = [
   './styles.css',
   './quotes.json',
   './quote-providers.json',
+  './words.json',
+  './word-providers.json',
   './manifest.webmanifest',
   './icon-192.png',
   './icon-512.png',

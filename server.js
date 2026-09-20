@@ -248,7 +248,7 @@ const server = http.createServer(async (req, res) => {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: blob: https://avatars.githubusercontent.com https://icons.duckduckgo.com",
-    "connect-src 'self' https://api.github.com https://codeberg.org https://gitea.com https://gitlab.com https://api.crossref.org https://api.anthropic.com https://api.openai.com https://openrouter.ai https://api.groq.com https://api.quotable.io https://zenquotes.io https://favqs.com https://dummyjson.com https://quoteslate.vercel.app https://stoic.tekloon.net https://type.fit https://api.freeapi.app",
+    "connect-src 'self' https://api.github.com https://codeberg.org https://gitea.com https://gitlab.com https://api.crossref.org https://api.anthropic.com https://api.openai.com https://openrouter.ai https://api.groq.com https://api.quotable.io https://zenquotes.io https://favqs.com https://dummyjson.com https://quoteslate.vercel.app https://stoic.tekloon.net https://type.fit https://api.freeapi.app https://words.dev-apis.com https://random-word-api.herokuapp.com https://random-words-api.vercel.app https://api.datamuse.com https://api.urbandictionary.com https://wordoftheday.freeapi.me https://api.wotd.site",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",

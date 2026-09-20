@@ -110,6 +110,6 @@ describe('styleConfigFor - the dialog view', () => {
   test('each style keeps its own defaults', () => {
     assert.notEqual(DEFAULTS.neon.glow, DEFAULTS.modern.glow);
     assert.equal(DEFAULTS.dashed.dash, 7);
-    assert.equal(DEFAULTS.bubble.radius, 999);
+    assert.equal(DEFAULTS.bubble.radius, 50);
   });
 });

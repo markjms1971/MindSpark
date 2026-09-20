@@ -2427,7 +2427,7 @@ function drawEdges(hidden){
     // CSS vars applyStyleConfigVars() sets on #viewport.
     let color=null, width=null, dash=null;
     const _sc = { ...STYLE_CONFIG_DEFAULTS[style], ...((map.styleConfig || {})[style] || {}) };
-    if(style==='dashed') dash = _sc.dash > 0 ? `${_sc.dash} ${Math.max(2, Math.round(_sc.dash * 0.7))}` : null;
+    if(_sc.dash > 0) dash = `${_sc.dash} ${Math.max(2, Math.round(_sc.dash * 0.7))}`;
     segs.push({d, color, width, dash});
   }
   // Merge segments sharing stroke settings into one path element each, so a
@@ -4846,8 +4846,9 @@ function showStyleConfigForm(){
       <h2>Map style settings - ${escapeHtml((MAP_STYLES.find(s=>s.id===style)||{name:style}).name)}</h2>
       <div class="vf-hint">Saved with this map and included in share links.
         edgeColor is any CSS color ("" = the theme default); cardPad is a
-        uniform card padding (0 = the style's own padding); glow only affects
-        Neon and dash only affects Dashed. Out-of-range values are clamped and
+        uniform card padding (0 = the style's own padding); glow adds a
+        colored glow to nodes; dash adds a dash pattern to edges.
+        Out-of-range values are clamped and
         unknown keys ignored, so what you get back may differ from what you
         type.</div>
       <div class="vf-fields">
@@ -10047,6 +10048,34 @@ async function exportPNG(){
         ctx.stroke();
       }
       ctx.globalAlpha=1; ctx.lineCap='round'; ctx.lineJoin='round';
+    } else if(look==='mathematician'){
+      // math doodles - grid lines + scattered math symbols
+      const inkCol = css('--ink') || themeInk;
+      ctx.strokeStyle=lineColor; ctx.lineWidth=1; ctx.globalAlpha=0.12;
+      for(let x=0;x<=W;x+=24){ ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,H); ctx.stroke(); }
+      for(let y=0;y<=H;y+=24){ ctx.beginPath(); ctx.moveTo(0,y+0.5); ctx.lineTo(W,y+0.5); ctx.stroke(); }
+      ctx.globalAlpha=0.08; ctx.font='14px serif'; ctx.fillStyle=inkCol;
+      // scattered math symbols
+      const symbols=['pi','theta','Sigma','integral','sqrt','alpha','beta','delta','infinity','dx','dy'];
+      const positions=[[60,60],[180,80],[300,60],[420,70],[70,180],[200,200],[380,180],[60,320],[220,340],[380,320],[140,420],[320,400],[420,440]];
+      positions.forEach(([x,y],i)=>{
+        if(x<W && y<H){
+          ctx.fillText(symbols[i%symbols.length], x, y);
+        }
+      });
+      // right triangle
+      ctx.strokeStyle=inkCol; ctx.globalAlpha=0.10; ctx.lineWidth=1.2;
+      ctx.beginPath(); ctx.moveTo(60,110); ctx.lineTo(100,60); ctx.lineTo(60,60); ctx.closePath(); ctx.stroke();
+      // circle
+      ctx.beginPath(); ctx.arc(200,160,28,0,Math.PI*2); ctx.stroke();
+      // sin wave
+      ctx.beginPath();
+      for(let x=300;x<=360;x+=2){
+        const y=120+Math.sin((x-300)*0.1)*20;
+        x===300?ctx.moveTo(x,y):ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+      ctx.globalAlpha=1; ctx.lineCap='round'; ctx.lineJoin='round';
     } else if(look==='architect'){
       // blueprint: minor 8px grid, major 32px over it, 45-degree construction
       // haze, the title-block rules down the left and top, and two ghost
@@ -10279,10 +10308,10 @@ async function exportPNG(){
     ctx.restore();
   }
 
-  // Nodes - radius per style, respecting styleConfig like live CSS (modern 12, classic 4/6 root, bubble 999, sketch 3, dashed 14, minimal 6/8 root, zigzag 2, neon 10)
+  // Nodes - radius per style, respecting styleConfig like live CSS (modern 12, classic 4/6 root, bubble 50, sketch 3, dashed 14, minimal 6/8 root, zigzag 2, neon 10)
   const _styleCfg = (typeof STYLE_CONFIG_DEFAULTS!=='undefined' && STYLE_CONFIG_DEFAULTS[mapStyle])
     ? { ...STYLE_CONFIG_DEFAULTS[mapStyle], ...((map.styleConfig||{})[mapStyle]||{}) } : null;
-  const _baseRadius = _styleCfg ? _styleCfg.radius : (mapStyle==='bubble'?999: mapStyle==='classic'?4: mapStyle==='sketch'?3: mapStyle==='dashed'?14: mapStyle==='minimal'?6: mapStyle==='zigzag'?2: mapStyle==='neon'?10:12);
+  const _baseRadius = _styleCfg ? _styleCfg.radius : (mapStyle==='bubble'?50: mapStyle==='classic'?4: mapStyle==='sketch'?3: mapStyle==='dashed'?14: mapStyle==='minimal'?6: mapStyle==='zigzag'?2: mapStyle==='neon'?10:12);
   // Indexed like the zebraDepth call above: computeRollups walks the tree with
   // childrenOf, which is O(n) per call without an index, so this was quadratic and
   // cost 874 ms of a 2000 node export on its own.
@@ -10341,15 +10370,16 @@ async function exportPNG(){
       return true;
     })();
     if(shouldStroke){
+      const _glow = _styleCfg ? _styleCfg.glow : 0;
       if(mapStyle==='minimal'){ ctx.strokeStyle=themeLine; ctx.lineWidth=1; }
-      else if(mapStyle==='neon'){ ctx.strokeStyle=accent; ctx.lineWidth=1.2; ctx.shadowColor=accent; ctx.shadowBlur=10; }
+      else if(mapStyle==='neon'){ ctx.strokeStyle=accent; ctx.lineWidth=1.2; ctx.shadowColor=accent; ctx.shadowBlur=_glow||10; }
       else if(mapStyle==='zigzag'){ ctx.strokeStyle=themeLine; ctx.lineWidth=2; }
       else if(mapStyle==='sketch'){ ctx.strokeStyle=themeInk; ctx.lineWidth=2; }
       else if(mapStyle==='classic'){ ctx.strokeStyle=themeLine; ctx.lineWidth=1.5; }
       else if(mapStyle==='dashed'){ ctx.strokeStyle=themeLine; ctx.lineWidth=1.5; }
-      else if(mapStyle==='circuit'){ ctx.strokeStyle=accent; ctx.lineWidth=1.5; ctx.shadowColor=accent; ctx.shadowBlur=6; }
-      else if(mapStyle==='blueprint'){ ctx.strokeStyle=themeInk; ctx.lineWidth=1.5; ctx.setLineDash([6,4]); }
-      else if(mapStyle==='clay'){ ctx.strokeStyle=themeLine; ctx.lineWidth=1; ctx.shadowColor=themeInk; ctx.shadowBlur=8; }
+      else if(mapStyle==='circuit'){ ctx.strokeStyle=accent; ctx.lineWidth=1.5; ctx.shadowColor=accent; ctx.shadowBlur=_glow||6; }
+      else if(mapStyle==='blueprint'){ ctx.strokeStyle=themeInk; ctx.lineWidth=1.5; ctx.setLineDash(_sc.dash>0?[_sc.dash, Math.max(2, Math.round(_sc.dash*0.7))]:[6,4]); }
+      else if(mapStyle==='clay'){ ctx.strokeStyle=themeLine; ctx.lineWidth=1; ctx.shadowColor=themeInk; ctx.shadowBlur=_glow||8; }
       else if(mapStyle==='ink'){ ctx.strokeStyle=themeInk; ctx.lineWidth=3; }
       else if(mapStyle==='paper'){ ctx.strokeStyle=themeLine; ctx.lineWidth=1; }
       else { ctx.strokeStyle=themeLine; ctx.lineWidth=1.5; }
@@ -10385,8 +10415,10 @@ async function exportPNG(){
     if(!n.fontSize) fontPx = Math.round(fontPx * lookScale);
     const fontFamily = isRoot ? serif : sans;
     ctx.textBaseline='middle';
-    // Padding per style: bubble has wider pads (11/22 vs 9/15), others use default
+    // Padding per style: use styleConfig cardPad if set, else per-style defaults
+    const _cp = _styleCfg ? _styleCfg.cardPad : 0;
     const insetX = (() => {
+      if(_cp > 0) return isRoot ? _cp + 12 : _cp;
       if(mapStyle==='bubble') return isRoot ? 26 : 22;
       return isRoot ? 22 : 15;
     })();
@@ -11581,6 +11613,7 @@ const LOOKS = [
   {id:'desert',      name:'in the<br>Desert',     font:'"Nunito",system-ui,sans-serif'},
   {id:'groot',       name:'Groot',         font:'"Fredoka",system-ui,sans-serif'},
   {id:'sailboat',    name:'on a<br>Sailboat',     font:'"Quicksand",sans-serif'},
+  {id:'mathematician', name:'a<br>Math Expert', font:'"Cambria Math",serif'},
 ];
 const MAP_STYLES = [
   {id:'modern',  name:'Modern',  desc:'Soft cards, curved branches'},
@@ -11603,7 +11636,7 @@ const MAP_STYLES = [
 const STYLE_CONFIG_DEFAULTS = {
   modern:  { edgeWidth:2.2, edgeColor:'', radius:12,  cardPad:0,  glow:0,  dash:0 },
   classic: { edgeWidth:1.6, edgeColor:'', radius:4,   cardPad:0,  glow:0,  dash:0 },
-  bubble:  { edgeWidth:3,   edgeColor:'', radius:999, cardPad:22, glow:0,  dash:0 },
+  bubble:  { edgeWidth:2,   edgeColor:'', radius:50, cardPad:10, glow:0,  dash:0 },
   sketch:  { edgeWidth:1.6, edgeColor:'', radius:3,   cardPad:0,  glow:0,  dash:0 },
   dashed:  { edgeWidth:2.2, edgeColor:'', radius:14,  cardPad:0,  glow:0,  dash:7 },
   minimal: { edgeWidth:1.1, edgeColor:'', radius:6,   cardPad:0,  glow:0,  dash:0 },
@@ -11669,7 +11702,6 @@ function applyStyleConfigVars(){
   vp.style.setProperty('--node-pad-x', cfg.cardPad ? cfg.cardPad + 'px' : null);
   vp.style.setProperty('--node-pad-y', cfg.cardPad ? cfg.cardPad + 'px' : null);
   vp.style.setProperty('--node-glow', cfg.glow + 'px');
-  vp.style.setProperty('--edge-glow', Math.max(2, Math.round(cfg.glow / 5)));
 }
 // Per-look tunables, keyed by look id on the map as map.lookConfig - the
 // same pattern as styleConfig/layoutConfig. font is the look's own font
@@ -11694,6 +11726,7 @@ const LOOK_CONFIG_DEFAULTS = {
   desert:       { font:'"Nunito",system-ui,sans-serif',               nodeSize:1, radius:12 },
   groot:        { font:'"Fredoka",system-ui,sans-serif',              nodeSize:1, radius:16 },
   sailboat:     { font:'"Quicksand",sans-serif',                       nodeSize:1, radius:20 },
+  mathematician:{ font:'"Cambria Math",serif',                              nodeSize:1, radius:14 },
 };
 const LOOK_CONFIG_BOUNDS = { nodeSize:[0.8,1.6], radius:[0,60] };
 // Repairs rather than rejects, like validateStyleConfig: numbers are clamped
@@ -11743,8 +11776,13 @@ function applyLookConfigVars(){
   else { root.style.removeProperty('--sans'); root.style.removeProperty('--serif'); }
   if(cfg.nodeSize !== 1) root.style.setProperty('--look-node-size', cfg.nodeSize);
   else root.style.removeProperty('--look-node-size');
-  if(cfg.radius !== defaults.radius) root.style.setProperty('--look-radius', cfg.radius + 'px');
-  else root.style.removeProperty('--look-radius');
+  if(cfg.radius !== defaults.radius) {
+    root.style.setProperty('--look-radius', cfg.radius + 'px');
+    if(root.classList) root.classList.add('user-look-radius');
+  } else {
+    root.style.removeProperty('--look-radius');
+    if(root.classList) root.classList.remove('user-look-radius');
+  }
 }
 const THEME_CONFIG_DEFAULTS = {
   'light':            { paper:'#f4efe6',  ink:'#23201b', accent:'#e0613a', nodeBg:'#ffffff', line:'#d8cfbf', glow:'rgba(255,255,255,.5)' },
@@ -13967,6 +14005,7 @@ const PREFS = [
   { key:'mindspark:tabs',              kind:'pref',      section:'Appearance', label:'Tabbed workspace',  show:v=>v==='1' ? 'on' : 'off' },
   { key:'mindspark:linkFavicons',      kind:'pref',      section:'Appearance', label:'Link favicons',     show:v=>v==='1' ? 'on' : 'off (default)' },
   { key:'mindspark:prefs:folds',       kind:'pref',      section:'Appearance', label:'Preferences card folds', show:v=>{ try{ return Object.entries(JSON.parse(v)).map(([k,o])=>k+(o?' open':' closed')).join(', '); }catch(e){ return '(unreadable)'; } } },
+  { key:'mindspark:sidebarContent',    kind:'pref',      section:'Appearance', label:'Sidebar content',  show:v=>{ if(v==='none') return 'off'; if(v==='quote') return 'Quote only'; if(v==='word') return 'Word only'; return 'Random (default)'; } },
   // Account - where maps are saved, and the credentials that get there
   { key:'mindspark:forge',             kind:'session',   section:'Account',    label:'Git host',          show:v=>v||'(not signed in)' },
   { key:'mindspark:forge:instance',    kind:'session',   section:'Account',    label:'Instance',          show:v=>v||'' },
@@ -14325,6 +14364,8 @@ function showPreferences(){
     row(ap, 'Zen toolbar', check('Pinned (always visible in the Zen layout)', document.body.classList.contains('zen-pinned'), setZenPinned));
     row(ap, 'Tabbed workspace', check('On', tabsEnabled, setTabsEnabled));
     row(ap, 'Link favicons', check('Show (fetched from icons.duckduckgo.com, which learns each link\u2019s host)', linkFaviconsEnabled(), setLinkFavicons));
+    const sidebarContent=select([{id:'random',name:'Random (quote or word)'}, {id:'quote',name:'Quote only'}, {id:'word',name:'Word only'}, {id:'none',name:'Don\'t show'}], (()=>{ try{ return localStorage.getItem('mindspark:sidebarContent')||'random'; }catch(e){ return 'random'; } })(), v=>{ try{ localStorage.setItem('mindspark:sidebarContent',v); }catch(e){} render(); const wrap=$('#qotd'); if(v==='none'){ if(wrap) wrap.hidden=true; } else { if(wrap){ wrap.hidden=false; loadQotd(); } } });
+    row(ap, 'Sidebar content', sidebarContent);
     // The nuclear option, last and unstyled as primary.
     const dz=section('everything','Everything');
     digest('everything', 'start over');
@@ -15978,9 +16019,16 @@ function _qotdDayOfYear(d=new Date()){
   return Math.floor(diff/86400000);
 }
 function _qotdRender(q){
-  const wrap=$('#qotd'), txt=wrap?.querySelector('.qotd-text'), auth=wrap?.querySelector('.qotd-author');
-  if(!wrap||!txt||!auth||!q) return;
-  txt.textContent=q.text||''; auth.textContent=q.author||'Unknown';
+  const wrap=$('#qotd'), txt=wrap?.querySelector('.qotd-text'), auth=wrap?.querySelector('.qotd-author'), word=wrap?.querySelector('.qotd-word'), def=wrap?.querySelector('.qotd-worddef');
+  if(!wrap||!q) return;
+  if(q.text){
+    txt.hidden=false; auth.hidden=false; word.hidden=true; def.hidden=true;
+    txt.textContent=q.text||''; auth.textContent=q.author||'Unknown';
+  } else if(q.word){
+    txt.hidden=true; auth.hidden=true; word.hidden=false; def.hidden=false;
+    word.innerHTML=''+q.word+(q.part?' <span class="wotd-part">'+q.part+'</span>':'');
+    def.textContent=q.definition||'';
+  }
   wrap.hidden=false;
 }
 async function _qotdFetch(url, parser){
@@ -16063,32 +16111,151 @@ async function _qotdTryCascade(){
   }
   return null;
 }
+/* ============================================================
+   Word of the day - providers and helpers (used by loadQotd)
+   ============================================================ */
+let _wotdWords=null;
+function _wotdDayOfYear(d=new Date()){
+  const start=new Date(d.getFullYear(),0,0);
+  const diff=d - start + ((start.getTimezoneOffset()-d.getTimezoneOffset())*60*1000);
+  return Math.floor(diff/86400000);
+}
+const _wotdParsers = {
+  wad: j=>j.word?{word:j.word, definition:'', part:''}:null,
+  randomword: j=>Array.isArray(j)&&j[0]?{word:j[0], definition:'', part:''}:null,
+  datamuse: j=>{
+    if(!Array.isArray(j)||!j[0]) return null;
+    const e=j[0]; let part='', def='';
+    if(e.defs&&e.defs.length){ const t=e.defs[0].indexOf('\t'); if(t>-1){part=e.defs[0].substring(0,t).trim(); def=e.defs[0].substring(t+1).trim();} }
+    return {word:e.word, definition:def, part};
+  },
+  urbandictionary: j=>j.list&&j.list[0]?{word:j.list[0].word, definition:j.list[0].definition||'', part:''}:null,
+  wotdsite: j=>j.word?{word:j.word, definition:j.definition||'', part:j.pos||''}:null,
+  freeapiword: j=>j.word?{word:j.word, definition:j.definition||'', part:j.partOfSpeech||''}:null,
+  randomwords: j=>Array.isArray(j)&&j[0]?{word:j[0].word, definition:j[0].definition||'', part:''}:null,
+};
+let _wotdProvidersCache = null;
+async function _wotdLoadProviders(){
+  if(_wotdProvidersCache) return _wotdProvidersCache;
+  try{
+    const res = await fetch('./word-providers.json', {cache:'no-store'});
+    if(res.ok){
+      const raw = await res.json();
+      if(Array.isArray(raw) && raw.length){
+        const mapped = raw.map(e=>{
+          const p = _wotdParsers[e.parser];
+          if(!e.url || !p) return null;
+          const obj = { url:e.url, parser:p };
+          if(e.headers) obj.headers=e.headers;
+          if(e.fallback && e.fallback.url && _wotdParsers[e.fallback.parser]){
+            obj.fallback = { url:e.fallback.url, parser:_wotdParsers[e.fallback.parser] };
+          }
+          return obj;
+        }).filter(Boolean);
+        if(mapped.length){ _wotdProvidersCache = mapped; return mapped; }
+      }
+    }
+  }catch(e){}
+  _wotdProvidersCache = [
+    { url:'https://random-words-api.vercel.app/word', parser:_wotdParsers.randomwords },
+    { url:'https://random-word-api.herokuapp.com/word', parser:_wotdParsers.randomword }
+  ];
+  return _wotdProvidersCache;
+}
+async function _wotdFetch(url, parser, headers){
+  try{
+    const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(), 4000);
+    const opt=headers ? {signal:ctrl.signal, cache:'no-store', headers:headers} : {signal:ctrl.signal, cache:'no-store'};
+    const r=await fetch(url, opt);
+    clearTimeout(t);
+    if(!r.ok) throw new Error('http '+r.status);
+    const j=await r.json();
+    const w=parser(j);
+    if(w && w.word && w.word.trim()) return {word:w.word.trim(), definition:(w.definition||'').trim(), part:w.part||''};
+  }catch(e){}
+  return null;
+}
+async function _wotdTryCascade(){
+  const providers = await _wotdLoadProviders();
+  const order = providers.slice();
+  for(let i=order.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [order[i],order[j]]=[order[j],order[i]]; }
+  for(const p of order){
+    let w=await _wotdFetch(p.url, p.parser, p.headers);
+    if(w) return w;
+    if(p.fallback){
+      w=await _wotdFetch(p.fallback.url, p.fallback.parser);
+      if(w) return w;
+    }
+  }
+  return null;
+}
+async function _wotdEnrichDatamuse(w){
+  if(!w || !w.word || (w.definition && w.part)) return;
+  try{
+    const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(), 3000);
+    const r=await fetch('https://api.datamuse.com/words?sp='+encodeURIComponent(w.word)+'&md=d', {signal:ctrl.signal, cache:'no-store'});
+    clearTimeout(t);
+    if(!r.ok) return;
+    const arr=await r.json();
+    if(!Array.isArray(arr)||!arr.length) return;
+    const entry=arr.find(e=>e.word&&e.word.toLowerCase()===w.word.toLowerCase())||arr[0];
+    if(!entry.defs||!entry.defs.length) return;
+    const raw=entry.defs[0];
+    const tab=raw.indexOf('\t');
+    if(tab>-1){
+      if(!w.part) w.part=raw.substring(0,tab).trim();
+      if(!w.definition) w.definition=raw.substring(tab+1).trim();
+    }
+  }catch(e){}
+}
+async function _wotdEnrich(w){
+  if(!w || !w.word) return;
+  if(!w.definition || !w.part){
+    if(!_wotdWords){
+      try{ const res=await fetch('./words.json',{cache:'no-store'}); if(res.ok) _wotdWords=await res.json(); }catch(e){}
+    }
+    if(_wotdWords){
+      const m=_wotdWords.find(x=>x.word.toLowerCase()===w.word.toLowerCase());
+      if(m){ if(!w.definition) w.definition=m.definition||''; if(!w.part) w.part=m.part||''; }
+    }
+  }
+  if(!w.definition || !w.part) await _wotdEnrichDatamuse(w);
+}
 async function loadQotd(){
   const wrap=$('#qotd'); if(!wrap) return;
-  try{
-    // try live cascade first
-    const live=await _qotdTryCascade();
-    if(live){ _qotdRender(live); }
-    else {
-      // local fallback - deterministic daily rotation
-      if(!_qotdQuotes){
-        const res=await fetch('./quotes.json', {cache:'no-store'});
-        if(!res.ok) throw new Error('no quotes');
-        _qotdQuotes=await res.json();
-      }
-      if(!Array.isArray(_qotdQuotes)||!_qotdQuotes.length) throw new Error('empty');
-      const idx=_qotdDayOfYear()%_qotdQuotes.length;
-      _qotdRender(_qotdQuotes[idx]);
+  function getPref(){ try{ return localStorage.getItem('mindspark:sidebarContent')||'random'; }catch(e){ return 'random'; } }
+  if(getPref()==='none'){ wrap.hidden=true; return; }
+  async function fetchWord(){
+    let w=await _wotdTryCascade();
+    if(!w){
+      if(!_wotdWords){ try{ const res=await fetch('./words.json',{cache:'no-store'}); if(res.ok) _wotdWords=await res.json(); }catch(e){} }
+      if(_wotdWords && _wotdWords.length) w=_wotdWords[_wotdDayOfYear()%_wotdWords.length];
     }
-    // refresh → try live again, else random local
-    $('#qotdRefresh')?.addEventListener('click', async ()=>{
-      const r=await _qotdTryCascade();
-      if(r) _qotdRender(r);
-      else if(_qotdQuotes){
-        const rnd=_qotdQuotes[Math.floor(Math.random()*_qotdQuotes.length)];
-        _qotdRender(rnd);
-      }
-    }, {once:false});
+    if(w) await _wotdEnrich(w);
+    return w;
+  }
+  async function fetchQuote(){
+    let q=await _qotdTryCascade();
+    if(!q){
+      if(!_qotdQuotes){ try{ const res=await fetch('./quotes.json',{cache:'no-store'}); if(res.ok) _qotdQuotes=await res.json(); }catch(e){} }
+      if(_qotdQuotes && _qotdQuotes.length) q=_qotdQuotes[_qotdDayOfYear()%_qotdQuotes.length];
+    }
+    return q;
+  }
+  async function loadOne(){
+    const pref=getPref();
+    if(pref==='word'){ const w=await fetchWord(); if(w) _qotdRender(w); else wrap.hidden=true; }
+    else if(pref==='quote'){ const q=await fetchQuote(); if(q) _qotdRender(q); else wrap.hidden=true; }
+    else {
+      const isWord=Math.random()<0.5;
+      if(isWord){ const w=await fetchWord(); if(w){ _qotdRender(w); } else { const q=await fetchQuote(); if(q) _qotdRender(q); else wrap.hidden=true; } }
+      else { const q=await fetchQuote(); if(q){ _qotdRender(q); } else { const w=await fetchWord(); if(w) _qotdRender(w); else wrap.hidden=true; } }
+    }
+  }
+  try{
+    await loadOne();
+    const btn=$('#qotdRefresh');
+    if(btn && !btn.dataset.wired){ btn.dataset.wired='1'; btn.addEventListener('click', loadOne); }
   }catch(e){
     wrap.hidden=true;
   }

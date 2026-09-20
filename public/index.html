@@ -15,7 +15,7 @@
      to an attacker origin: script-src has no external host, and connect-src is
      an allowlist. Adding an origin here widens that exfiltration channel, so
      read the "External hosts need a CSP entry" note in AGENTS.md first. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://avatars.githubusercontent.com https://icons.duckduckgo.com; connect-src 'self' https://api.github.com https://codeberg.org https://gitea.com https://gitlab.com https://api.crossref.org https://api.anthropic.com https://api.openai.com https://openrouter.ai https://api.groq.com https://api.quotable.io https://zenquotes.io https://favqs.com https://dummyjson.com https://quoteslate.vercel.app https://stoic.tekloon.net https://type.fit https://api.freeapi.app https://mindspark-oauth.githubpage.workers.dev wss://mindspark-oauth.githubpage.workers.dev; object-src 'none'; base-uri 'self'; form-action 'self'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://avatars.githubusercontent.com https://icons.duckduckgo.com; connect-src 'self' https://api.github.com https://codeberg.org https://gitea.com https://gitlab.com https://api.crossref.org https://api.anthropic.com https://api.openai.com https://openrouter.ai https://api.groq.com https://api.quotable.io https://zenquotes.io https://favqs.com https://dummyjson.com https://quoteslate.vercel.app https://stoic.tekloon.net https://type.fit https://api.freeapi.app https://words.dev-apis.com https://random-word-api.herokuapp.com https://random-words-api.vercel.app https://api.datamuse.com https://api.urbandictionary.com https://wordoftheday.freeapi.me https://api.wotd.site https://mindspark-oauth.githubpage.workers.dev wss://mindspark-oauth.githubpage.workers.dev; object-src 'none'; base-uri 'self'; form-action 'self'" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes" />
 <meta name="theme-color" content="#e0613a" />
 <meta name="apple-mobile-web-app-title" content="MindSpark" />
@@ -137,7 +137,9 @@
       <div id="qotd" class="qotd" aria-live="polite" hidden>
         <div class="qotd-text"></div>
         <div class="qotd-author"></div>
-        <button class="qotd-refresh" id="qotdRefresh" title="New quote" aria-label="New quote">↻</button>
+        <div class="qotd-word" hidden></div>
+        <div class="qotd-worddef" hidden></div>
+        <button class="qotd-refresh" id="qotdRefresh" title="New" aria-label="New">↻</button>
       </div>
     </div>
     <div class="side-rail"><button class="tb" id="railToggle" title="Open sidebar">☰</button></div>

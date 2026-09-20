@@ -110,9 +110,11 @@ describe('Content-Security-Policy stays in sync across the three deployments', (
     const allowed = new Set(parse(metaPolicy())['connect-src']);
     const app = read('public', 'app.js');
     const providers = read('public', 'quote-providers.json');
+    const wordProviders = read('public', 'word-providers.json');
     const called = new Set();
     for (const m of app.matchAll(/fetch\(\s*[`'"](https:\/\/[a-z0-9.-]+)/g)) called.add(m[1]);
     for (const m of providers.matchAll(/"url":\s*"(https:\/\/[a-z0-9.-]+)/g)) called.add(m[1]);
+    for (const m of wordProviders.matchAll(/"url":\s*"(https:\/\/[a-z0-9.-]+)/g)) called.add(m[1]);
     for (const origin of called) {
       assert.ok(allowed.has(origin), `${origin} is fetched by the app but missing from connect-src`);
     }

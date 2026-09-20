@@ -329,7 +329,7 @@
     --toolbar-bg:#e0f2fe; --toolbar-text:#005596;
     --paper:#005596; --paper-2:#004478; --ink:#e0f2fe; --ink-soft:#7dd3fc;
     --line:#4080b0; --line-2:#5797c2;
-    --accent:#ffffff; --accent-deep:#c9e3f5; --teal:#7dd3fc;
+    --accent:#ffffff; --accent-deep:#c9e3f5; --accent-fg:#005596; --teal:#7dd3fc;
     --chrome:#004478; --chrome-edge:#4080b0;
     --node-bg:#004478; --node-ink:#e0f2fe;
     --canvas-dot:#4080b0;
@@ -342,7 +342,7 @@
     --toolbar-bg:#ffffff; --toolbar-text:#000000;
     --paper:#000000; --paper-2:#18181b; --ink:#a1a1aa; --ink-soft:#52525b;
     --line:#27272a; --line-2:#333338;
-    --accent:#ffffff; --accent-deep:#d4d4d8; --teal:#e4e4e7;
+    --accent:#ffffff; --accent-deep:#d4d4d8; --accent-fg:#000000; --teal:#e4e4e7;
     --chrome:#18181b; --chrome-edge:#27272a;
     --node-bg:#18181b; --node-ink:#a1a1aa;
     --canvas-dot:#27272a;
@@ -950,9 +950,9 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   #mdEditor{z-index:2}
   /* rendered preview */
   #mdPane .md-prev-btn{margin-left:2px;border:1px solid var(--line);background:transparent;color:var(--ink-soft);cursor:pointer;font-size:11px;font-weight:600;padding:2px 9px;border-radius:6px}
-  #mdPane .md-prev-btn.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  #mdPane .md-prev-btn.on{background:var(--accent);color:var(--accent-fg, #fff);border-color:var(--accent)}
   #mdPane .md-wrap-btn{margin-left:2px;border:1px solid var(--line);background:transparent;color:var(--ink-soft);cursor:pointer;font-size:11px;font-weight:600;padding:2px 9px;border-radius:6px}
-  #mdPane .md-wrap-btn.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  #mdPane .md-wrap-btn.on{background:var(--accent);color:var(--accent-fg, #fff);border-color:var(--accent)}
   #mdPane.md-preview .md-wrap-btn{display:none}
   /* Word wrap: the textarea and highlight overlay share this rule so switching both to
      pre-wrap at once keeps them pixel-aligned (identical font/width/padding/text, so the
@@ -1005,7 +1005,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   #mdPane .hl-tag{color:#22a06b}
   #mdPane .hl-url{color:#3b82f6;text-decoration:underline}
   #mdPane .md-resize{position:absolute;top:0;right:0;width:7px;height:100%;cursor:col-resize;z-index:6}
-  .tb#mdToggle.on{background:var(--accent);color:#fff}
+  .tb#mdToggle.on{background:var(--accent);color:var(--accent-fg, #fff)}
 
   /* ===== Sidebar ===== */
   .side{width:268px;min-height:0;position:relative;background:var(--chrome);border-right:1px solid var(--chrome-edge);display:flex;flex-direction:column;transition:width .22s cubic-bezier(.4,0,.2,1),background-color .3s ease,border-color .3s ease}
@@ -1082,9 +1082,12 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   .qotd{position:relative;margin-top:12px;padding:8px 10px 8px 10px;border-left:2px solid var(--accent);background:color-mix(in srgb, var(--accent) 7%, transparent);border-radius:0 8px 8px 0}
   .qotd[hidden]{display:none}
   .qotd-text{font-size:12px;line-height:1.45;color:var(--ink);font-style:italic;white-space:pre-wrap;word-break:break-word}
-  .qotd-text::before{content:'“'} .qotd-text::after{content:'”'}
+  .qotd-text::before{content:'\201C'} .qotd-text::after{content:'\201D'}
   .qotd-author{margin-top:4px;font-size:10.5px;color:var(--ink-soft);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .qotd-author::before{content:'- '}
+  .qotd-word{font-size:14px;line-height:1.4;color:var(--ink);font-weight:600}
+  .qotd-word .wotd-part{font-size:10.5px;color:var(--ink-soft);font-weight:400;opacity:.7}
+  .qotd-worddef{font-size:12px;line-height:1.45;color:var(--ink-soft);margin-top:2px;white-space:pre-wrap;word-break:break-word}
   .qotd-refresh{position:absolute;top:4px;right:4px;width:20px;height:20px;display:grid;place-items:center;border:none;background:transparent;color:var(--ink-soft);border-radius:6px;cursor:pointer;font-size:12px;line-height:1;opacity:0;transition:opacity .15s, background-color .15s}
   .qotd:hover .qotd-refresh{opacity:1}
   .qotd-refresh:hover{background:var(--hover);color:var(--ink)}
@@ -1106,7 +1109,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   .tb:hover{background:var(--hover)}
   .tb:disabled{opacity:.32;cursor:default}
   .tb.wide{width:auto;padding:0 12px;font-size:13.5px;font-weight:600;gap:7px}
-  .tb.primary{background:var(--accent);color:#fff}
+  .tb.primary{background:var(--accent);color:var(--accent-fg, #fff)}
   .tb.primary:hover{background:var(--accent-deep)}
   .title-edit{font-family:var(--serif);font-weight:600;font-size:19px;border:none;background:transparent;color:var(--ink);padding:6px 12px;min-width:120px;max-width:340px;border-radius:9px;outline:none}
   .title-edit:hover,.title-edit:focus{background:var(--chrome)}
@@ -1179,9 +1182,9 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   .hint .close{float:right;margin-left:8px;cursor:pointer;color:var(--ink-soft);border:none;background:none;font-size:14px}
 
   /* ===== Nodes ===== */
-  .node{position:absolute;background:var(--card-bg);border:1.5px solid var(--line);border-radius:12px;padding:9px 15px;font-size:15px;font-weight:500;line-height:1.35;box-shadow:var(--shadow);width:max-content;max-width:240px;min-width:34px;user-select:none;transition:background-color .3s ease,color .3s ease,box-shadow .15s,border-color .15s,transform .06s;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;display:flex;align-items:center;justify-content:center;text-align:center;box-sizing:border-box}
+  .node{position:absolute;background:var(--card-bg);border:1.5px solid var(--line);border-radius:var(--node-radius, 12px);padding:var(--node-pad-y, 9px) var(--node-pad-x, 15px);font-size:calc(15px * var(--look-node-size, 1));font-weight:500;line-height:1.35;box-shadow:var(--shadow);width:max-content;max-width:240px;min-width:34px;user-select:none;transition:background-color .3s ease,color .3s ease,box-shadow .15s,border-color .15s,transform .06s;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;display:flex;align-items:center;justify-content:center;text-align:center;box-sizing:border-box}
   .node:hover{box-shadow:var(--shadow-lg)}
-  .node.root{font-family:var(--serif);font-weight:600;font-size:19px;padding:12px 22px;border-width:0}
+  .node.root{font-family:var(--serif);font-weight:600;font-size:calc(19px * var(--look-node-size, 1));padding:var(--node-pad-y, 12px) var(--node-pad-x, 22px);border-width:0}
   .node.sel{outline:2.5px solid var(--accent);outline-offset:2px}
   .node.editing{cursor:text;user-select:text;outline:none !important;box-shadow:none}
   .node.editing .node-text{outline:none}
@@ -1222,7 +1225,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   .node.formula-node::before{
     content:'\0192x'; position:absolute; top:-7px; left:-7px;
     width:16px; height:16px; border-radius:50%;
-    background:var(--accent); color:#fff;
+    background:var(--accent); color:var(--accent-fg, #fff);
     font-size:9px; font-weight:700; font-style:normal;
     display:flex; align-items:center; justify-content:center;
     box-shadow:0 1px 3px rgba(0,0,0,.25);
@@ -1280,11 +1283,11 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
     right:-10px; top:50%; margin-top:-9px;
   }
   .node:hover .h-collapse{opacity:1}
-  .node .h-collapse.collapsed{background:var(--accent);color:#fff;border-color:var(--accent);opacity:1}
+  .node .h-collapse.collapsed{background:var(--accent);color:var(--accent-fg, #fff);border-color:var(--accent);opacity:1}
   .node.left .h-collapse{left:-10px;right:auto}
 
   /* Add child - outer edge (right for right-side / root, left for left-side) */
-  .node .h-child{background:var(--accent);color:#fff;right:-32px;top:50%;margin-top:-11px}
+  .node .h-child{background:var(--accent);color:var(--accent-fg, #fff);right:-32px;top:50%;margin-top:-11px}
   .node.left .h-child{left:-32px;right:auto}
 
   /* Add sibling - below the node, centered */
@@ -1442,54 +1445,52 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
     font-family:inherit; font-size:13px; font-weight:500; color:var(--sticky-ink);
   }
   .notes-popup .np-actions > button:hover{background:color-mix(in srgb, var(--sticky-ink) 12%, transparent)}
-  .notes-popup button.primary{background:var(--accent); color:#fff; border-color:var(--accent)}
+  .notes-popup button.primary{background:var(--accent); color:var(--accent-fg, #fff); border-color:var(--accent)}
   .notes-popup button.primary:hover{background:var(--accent-deep)}
   .notes-popup .np-clear{margin-right:auto; color:var(--ink-soft); border-color:transparent; background:transparent}
   .notes-popup .np-clear:hover{color:var(--accent-deep); background:var(--hover)}
 
   /* ===== Map style variants (applied to viewport[data-style]) ===== */
   #viewport[data-style="modern"]{--edge-color:var(--line-2);--edge-width:2.2}
-  #viewport[data-style="classic"] .node{border-radius:4px; border-width:1.5px}
+  #viewport[data-style="classic"] .node{border-radius:var(--node-radius, 4px); border-width:1.5px}
   #viewport[data-style="classic"]{--edge-color:var(--line-2);--edge-width:1.6}
-  #viewport[data-style="classic"] .node.root{border-radius:6px}
-  #viewport[data-style="bubble"]  .node{border-radius:999px; padding:11px 22px; border-width:0; box-shadow:var(--shadow-lg)}
-  #viewport[data-style="bubble"] {--edge-color:var(--accent);--edge-width:3}
-  #viewport[data-style="bubble"]  .node.root{padding:14px 26px}
-  #viewport[data-style="sketch"]  .node{border-radius:3px; border-width:2px; border-color:var(--ink); box-shadow:none}
+  #viewport[data-style="classic"] .node.root{border-radius:var(--node-radius, 6px)}
+  #viewport[data-style="bubble"]  .node{border-radius:var(--node-radius, 50px); padding:var(--node-pad-y, 10px) var(--node-pad-x, 10px); border-width:0; box-shadow:0 0 var(--node-glow, 0) var(--node-glow, 0) color-mix(in srgb, var(--accent) 20%, transparent)}
+  #viewport[data-style="bubble"] {--edge-color:var(--accent);--edge-width:2}
+  #viewport[data-style="bubble"]  .node.root{padding:calc(var(--node-pad-y, 10px) + 3px) calc(var(--node-pad-x, 10px) + 4px)}
+  #viewport[data-style="sketch"]  .node{border-radius:var(--node-radius, 3px); border-width:2px; border-color:var(--ink); box-shadow:none}
   #viewport[data-style="sketch"]  .node.root{border-width:0}
   #viewport[data-style="sketch"] {--edge-color:var(--ink-soft);--edge-width:1.6}
   #viewport[data-style="dashed"]   {--edge-color:var(--line-2);--edge-width:2.2}
-  #viewport[data-style="dashed"]   .node{border-radius:14px}
+  #viewport[data-style="dashed"]   .node{border-radius:var(--node-radius, 14px)}
   #viewport[data-style="minimal"]  {--edge-color:var(--line-2);--edge-width:1.1}
-  #viewport[data-style="minimal"]  .node{border-radius:6px; border-width:1px; box-shadow:none}
-  #viewport[data-style="minimal"]  .node.root{border-radius:8px}
+  #viewport[data-style="minimal"]  .node{border-radius:var(--node-radius, 6px); border-width:1px; box-shadow:none}
+  #viewport[data-style="minimal"]  .node.root{border-radius:var(--node-radius, 8px)}
   #viewport[data-style="zigzag"]   {--edge-color:var(--line-2);--edge-width:2}
-  #viewport[data-style="zigzag"]   .node{border-radius:2px; border-width:2px; box-shadow:none}
-  #viewport[data-style="zigzag"]   .node.root{border-radius:2px}
+  #viewport[data-style="zigzag"]   .node{border-radius:var(--node-radius, 2px); border-width:2px; box-shadow:none}
+  #viewport[data-style="zigzag"]   .node.root{border-radius:var(--node-radius, 2px)}
   #viewport[data-style="neon"]     {--edge-color:var(--accent);--edge-width:2.4}
-  #viewport[data-style="neon"]     .node{border-radius:10px; border-width:1px; border-color:color-mix(in srgb, var(--accent) 55%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent), 0 0 16px color-mix(in srgb, var(--accent) 38%, transparent)}
-  #viewport[data-style="neon"]     .node.root{box-shadow:0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent), 0 0 26px color-mix(in srgb, var(--accent) 55%, transparent)}
+  #viewport[data-style="neon"]     .node{border-radius:var(--node-radius, 10px); border-width:1px; border-color:color-mix(in srgb, var(--accent) 55%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent), 0 0 var(--node-glow, 16px) color-mix(in srgb, var(--accent) 38%, transparent)}
+  #viewport[data-style="neon"]     .node.root{box-shadow:0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent), 0 0 var(--node-glow, 26px) color-mix(in srgb, var(--accent) 55%, transparent)}
   #viewport[data-style="neon"]     #edges path{filter:drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 65%, transparent))}
   #viewport[data-style="circuit"]  {--edge-color:var(--accent);--edge-width:1.4}
-  #viewport[data-style="circuit"]  .node{border-radius:4px; border-width:1.5px; border-color:color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent), 0 1px 3px color-mix(in srgb, var(--accent) 12%, transparent)}
-  #viewport[data-style="circuit"]  .node.root{border-width:1.5px; box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent), 0 0 10px color-mix(in srgb, var(--accent) 18%, transparent)}
-  #viewport[data-style="circuit"]  #edges path{stroke-dasharray:3 3}
+  #viewport[data-style="circuit"]  .node{border-radius:var(--node-radius, 4px); border-width:1.5px; border-color:color-mix(in srgb, var(--accent) 45%, transparent); box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent), 0 1px var(--node-glow, 3px) color-mix(in srgb, var(--accent) 12%, transparent)}
+  #viewport[data-style="circuit"]  .node.root{border-width:1.5px; box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent), 0 0 var(--node-glow, 10px) color-mix(in srgb, var(--accent) 18%, transparent)}
   #viewport[data-style="blueprint"]{--edge-color:var(--ink-soft);--edge-width:1.2}
-  #viewport[data-style="blueprint"] .node{border-radius:11px; border-width:1.5px; border-style:dashed; border-color:var(--ink); background:color-mix(in srgb, var(--paper) 82%, transparent); box-shadow:none}
-  #viewport[data-style="blueprint"] .node.root{border-radius:13px; border-style:dashed}
-  #viewport[data-style="blueprint"] #edges path{stroke-dasharray:6 4}
+  #viewport[data-style="blueprint"] .node{border-radius:var(--node-radius, 11px); border-width:1.5px; border-style:dashed; border-color:var(--ink); background:color-mix(in srgb, var(--paper) 82%, transparent); box-shadow:none}
+  #viewport[data-style="blueprint"] .node.root{border-radius:var(--node-radius, 13px); border-style:dashed}
   #viewport[data-style="clay"]     {--edge-color:var(--line-2);--edge-width:1.6}
-  #viewport[data-style="clay"]     .node{border-radius:16px; border-width:1px; border-color:color-mix(in srgb, var(--line) 40%, transparent); background:var(--card-bg); box-shadow:inset 2px 2px 4px color-mix(in srgb, #fff 70%, transparent), inset -2px -2px 6px color-mix(in srgb, var(--ink) 12%, transparent), 0 8px 20px color-mix(in srgb, var(--ink) 14%, transparent)}
-  #viewport[data-style="clay"]     .node.root{border-radius:18px; box-shadow:inset 3px 3px 6px color-mix(in srgb, #fff 75%, transparent), inset -3px -3px 8px color-mix(in srgb, var(--ink) 14%, transparent), 0 12px 28px color-mix(in srgb, var(--ink) 16%, transparent)}
+  #viewport[data-style="clay"]     .node{border-radius:var(--node-radius, 16px); border-width:1px; border-color:color-mix(in srgb, var(--line) 40%, transparent); background:var(--card-bg); box-shadow:inset 2px 2px 4px color-mix(in srgb, #fff 70%, transparent), inset -2px -2px 6px color-mix(in srgb, var(--ink) 12%, transparent), 0 8px var(--node-glow, 20px) color-mix(in srgb, var(--ink) 14%, transparent)}
+  #viewport[data-style="clay"]     .node.root{border-radius:var(--node-radius, 18px); box-shadow:inset 3px 3px 6px color-mix(in srgb, #fff 75%, transparent), inset -3px -3px 8px color-mix(in srgb, var(--ink) 14%, transparent), 0 12px var(--node-glow, 28px) color-mix(in srgb, var(--ink) 16%, transparent)}
   #viewport[data-style="clay"]     #edges path{opacity:.95}
   #viewport[data-style="ink"]      {--edge-color:var(--ink);--edge-width:2.6}
-  #viewport[data-style="ink"]      .node{border-radius:8px; border-width:3px; border-color:var(--ink); box-shadow:4px 4px 0 var(--ink)}
-  #viewport[data-style="ink"]      .node.root{border-radius:10px; border-width:3px; box-shadow:4px 4px 0 var(--ink)}
+  #viewport[data-style="ink"]      .node{border-radius:var(--node-radius, 8px); border-width:3px; border-color:var(--ink); box-shadow:4px 4px 0 var(--ink)}
+  #viewport[data-style="ink"]      .node.root{border-radius:var(--node-radius, 10px); border-width:3px; box-shadow:4px 4px 0 var(--ink)}
   #viewport[data-style="ink"]      #edges path{stroke-linecap:square}
   #viewport[data-style="paper"]    {--edge-color:var(--line-2);--edge-width:1.5}
-  #viewport[data-style="paper"]    .node{border-radius:6px; border-width:1px; border-color:var(--line); background-color:var(--card-bg); background-image:repeating-linear-gradient(180deg, transparent 0 22px, color-mix(in srgb, var(--line) 22%, transparent) 23px); background-size:100% 23px; box-shadow:0 2px 6px color-mix(in srgb, var(--ink) 10%, transparent), 0 1px 2px color-mix(in srgb, var(--ink) 8%, transparent)}
+  #viewport[data-style="paper"]    .node{border-radius:var(--node-radius, 6px); border-width:1px; border-color:var(--line); background-color:var(--card-bg); background-image:repeating-linear-gradient(180deg, transparent 0 22px, color-mix(in srgb, var(--line) 22%, transparent) 23px); background-size:100% 23px; box-shadow:0 2px 6px color-mix(in srgb, var(--ink) 10%, transparent), 0 1px 2px color-mix(in srgb, var(--ink) 8%, transparent)}
   #viewport[data-style="paper"]    .node::after{content:""; position:absolute; top:0; right:0; width:14px; height:14px; background:linear-gradient(135deg, transparent 50%, color-mix(in srgb, var(--line) 55%, transparent) 50%, color-mix(in srgb, var(--paper) 92%, transparent) 56%); border-radius:0 6px 0 4px; box-shadow:-1px 1px 2px color-mix(in srgb, var(--ink) 10%, transparent); pointer-events:none}
-  #viewport[data-style="paper"]    .node.root{border-radius:8px}
+  #viewport[data-style="paper"]    .node.root{border-radius:var(--node-radius, 8px)}
   #viewport[data-style="paper"]    .node.root::after{width:16px; height:16px; border-radius:0 8px 0 5px}
   #viewport[data-style="paper"]    #edges path{stroke-linecap:round}
 
@@ -1513,7 +1514,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
      font-size on .node: NOT a shape override (no border-radius/transform
      here), just legibility compensation - handwriting fonts need more size
      than a geometric sans for equivalent readability. */
-  :root[data-look="handwritten"] .node{ font-size:1.2em; }
+   :root[data-look="handwritten"] .node{ font-size:calc(1.2em * var(--look-node-size, 1)); }
   :root[data-look="handwritten"] .stage{
     background-image:repeating-linear-gradient(var(--paper) 0px, var(--paper) 27px, var(--line) 28px);
     background-size:100% 28px; background-color:var(--paper);
@@ -1744,7 +1745,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
       font-family:"Space Grotesk",sans-serif; font-size:11px; letter-spacing:0.1em; text-transform:uppercase; font-weight:800;
    }
    :root[data-look="architect"] .breadcrumb .bc-crumb{ border-radius:3px; padding:3px 8px; font-weight:800; letter-spacing:0.08em; background:color-mix(in srgb, var(--paper-2) 70%, transparent); }
-   :root[data-look="architect"] .breadcrumb .bc-crumb.current{ background:var(--accent); color:#fff; }
+   :root[data-look="architect"] .breadcrumb .bc-crumb.current{ background:var(--accent); color:var(--accent-fg, #fff); }
    :root[data-look="architect"] .breadcrumb .bc-sep{ color:var(--ink); opacity:.45; font-weight:900; font-size:10px; letter-spacing:0; }
     :root[data-look="architect"] .breadcrumb .bc-crumb:hover{ background:color-mix(in srgb, var(--accent) 12%, transparent); }
 
@@ -1931,7 +1932,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   :root[data-look="beach"] .side{border-right:1px solid var(--teal)}
   :root[data-look="beach"] .new-map{border:1.5px dashed var(--teal)}
   :root[data-look="beach"] .vf-card{
-    border-radius:999px; border:1px solid var(--teal); box-shadow:var(--shadow);
+    border-radius:18px; border:1px solid var(--teal); box-shadow:var(--shadow);
   }
   :root[data-look="beach"] .vf-card h2{font-weight:600}
   :root[data-look="beach"] .row-pop,
@@ -2338,7 +2339,82 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
     color:var(--teal); opacity:.5; font-weight:900;
   }
 
-  /* A sonar ping, because the static rings above are a DIAGRAM of sonar rather
+              :root[data-look="mathematician"]{ --sans:"Cambria Math",serif; --serif:"Cambria Math",serif;
+    --look-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600' viewBox='0 0 600 600'%3E%3Cg fill='none' stroke='%23000' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg transform='translate(100 120) scale(1.25)'%3E%3Ccircle r='40'/%3E%3Cellipse rx='40' ry='13' stroke-dasharray='4 4'/%3E%3Cellipse rx='13' ry='40' stroke-dasharray='4 4'/%3E%3C/g%3E%3Ctext x='155' y='115' font-family='Cambria Math' font-size='11' fill='%23000' stroke='none'%3Ex² + y² + z² = r²%3C/text%3E%3Cg transform='translate(320 90) scale(1.3)'%3E%3Cline x1='0' y1='0' x2='35' y2='20'/%3E%3Cline x1='35' y1='20' x2='0' y2='40'/%3E%3Cline x1='0' y1='-40' x2='35' y2='-20'/%3E%3Cline x1='35' y1='-20' x2='0' y2='0'/%3E%3Cline x1='0' y1='0' x2='-35' y2='-20'/%3E%3Cline x1='-35' y1='-20' x2='0' y2='-40'/%3E%3Cline x1='0' y1='0' x2='0' y2='-40'/%3E%3Cline x1='35' y1='20' x2='35' y2='-20'/%3E%3Cline x1='0' y1='40' x2='0' y2='0'/%3E%3Cline x1='0' y1='40' x2='-35' y2='20' stroke-dasharray='4 4'/%3E%3Cline x1='-35' y1='20' x2='0' y2='0' stroke-dasharray='4 4'/%3E%3Cline x1='-35' y1='20' x2='-35' y2='-20' stroke-dasharray='4 4'/%3E%3C/g%3E%3Ctext x='320' y='155' font-family='Cambria Math' font-size='11' fill='%23000' stroke='none'%3EV = s³%3C/text%3E%3Cg transform='translate(510 180) scale(0.85)'%3E%3Cpath d='M-28 46 L0 -10 L28 46'/%3E%3Cellipse cy='46' rx='28' ry='9'/%3E%3C/g%3E%3Ctext x='490' y='235' font-family='Cambria Math' font-size='11' fill='%23000' stroke='none'%3EV = πr²h/3%3C/text%3E%3Cg transform='translate(130 340) scale(1.1)'%3E%3Cpath d='M0 -38 L-38 28 L38 28 Z'/%3E%3Cpath d='M-38 28 L-24 48 L24 48 L38 28'/%3E%3Cline x1='0' y1='-38' x2='-24' y2='48' stroke-dasharray='4 4'/%3E%3Cline x1='0' y1='-38' x2='24' y2='48' stroke-dasharray='4 4'/%3E%3Cline x1='-24' y1='48' x2='24' y2='48' stroke-dasharray='4 4'/%3E%3C/g%3E%3Ctext x='115' y='415' font-family='Cambria Math' font-size='11' fill='%23000' stroke='none'%3EV = Bh/3%3C/text%3E%3Cg transform='translate(470 420) scale(0.7)'%3E%3Cellipse cx='30' cy='0' rx='30' ry='10'/%3E%3Cline x1='0' y1='0' x2='0' y2='70'/%3E%3Cline x1='60' y1='0' x2='60' y2='70'/%3E%3Cellipse cx='30' cy='70' rx='30' ry='10' stroke-dasharray='3 3'/%3E%3C/g%3E%3Ctext x='455' y='478' font-family='Cambria Math' font-size='11' fill='%23000' stroke='none'%3EV = πr²h%3C/text%3E%3Cg transform='translate(200 490) scale(0.65)'%3E%3Cpath d='M-18 12 Q0 -8 18 12'/%3E%3C/g%3E%3Ctext x='185' y='510' font-family='Cambria Math' font-size='11' fill='%23000' stroke='none'%3Ey = ax²%3C/text%3E%3Ccircle cx='555' cy='18' r='1.2' fill='%23000'/%3E%3Ccircle cx='175' cy='55' r='0.9' fill='%23000'/%3E%3Ccircle cx='500' cy='270' r='1' fill='%23000'/%3E%3Ctext x='60' y='240' font-family='Cambria Math' font-size='12' fill='%23000' stroke='none'%3Etg a = a / b%3C/text%3E%3Ctext x='380' y='320' font-family='Cambria Math' font-size='12' fill='%23000' stroke='none'%3Ecos a = b / c%3C/text%3E%3Ctext x='340' y='460' font-family='Cambria Math' font-size='12' fill='%23000' stroke='none'%3Esin a = a / c%3C/text%3E%3C/g%3E%3C/svg%3E");
+    --look-mask-size:600px 600px;
+    --look-mask-ink:7%;
+   }
+   :root[data-look="mathematician"] .stage{
+     background-image:
+       linear-gradient(color-mix(in srgb, var(--line) 12%, transparent) 1px, transparent 1px),
+       linear-gradient(90deg, color-mix(in srgb, var(--line) 12%, transparent) 1px, transparent 1px);
+     background-size:24px 24px;
+     background-color:var(--paper);
+   }
+    :root[data-look="mathematician"] .node{
+      border-radius:12px;
+      border:1.5px solid color-mix(in srgb, var(--accent) 55%, var(--ink));
+      box-shadow:none;
+    }
+    :root[data-look="mathematician"] .node.root{
+      border-radius:18px;
+      border-width:2px;
+      box-shadow:none;
+    }
+   :root[data-look="mathematician"] .nodebar{
+     font-size:11px; font-family:var(--sans); letter-spacing:0.3px;
+   }
+   :root[data-look="mathematician"] .side{border-right:1.5px solid color-mix(in srgb, var(--accent) 55%, var(--ink))}
+   :root[data-look="mathematician"] .new-map{border:1.5px dashed var(--accent)}
+   :root[data-look="mathematician"] .vf-card{
+     border:1.5px solid color-mix(in srgb, var(--accent) 40%, var(--ink));
+     border-radius:16px;
+   }
+   :root[data-look="mathematician"] .vf-card h2{font-weight:700}
+   :root[data-look="mathematician"] .row-pop,
+   :root[data-look="mathematician"] .picker,
+   :root[data-look="mathematician"] .donate-card,
+   :root[data-look="mathematician"] .export-pop,
+   :root[data-look="mathematician"] .tpl-pop{
+     border:1.5px solid color-mix(in srgb, var(--accent) 40%, var(--ink));
+     border-radius:12px;
+   }
+   :root[data-look="mathematician"] .donate-card{ border-radius:16px; }
+   :root[data-look="mathematician"] .search-wrap{ border-radius:999px; border:1.5px solid var(--accent); }
+ :root[data-look="mathematician"] .minimap{
+      border-radius:10px; border:1.5px solid color-mix(in srgb, var(--accent) 35%, var(--ink));
+      box-shadow:none;
+      background:
+        linear-gradient(color-mix(in srgb, var(--accent) 10%, transparent) 1px, transparent 1px),
+        linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent) 1px, transparent 1px),
+        color-mix(in srgb, var(--chrome) 92%, transparent);
+      background-size:8px 8px;
+    }
+   :root[data-look="mathematician"] .toast{ border-radius:999px; border:1.5px solid var(--accent); }
+:root[data-look="mathematician"] .breadcrumb{
+      border-radius:0; border:none;
+      background:transparent; box-shadow:none;
+      font-family:"Cambria Math",serif; font-size:13px; gap:0;
+    }
+    :root[data-look="mathematician"] .breadcrumb .bc-crumb{
+      border-radius:0; padding:2px 6px;
+      color:var(--ink); background:transparent;
+      border-bottom:2px solid transparent;
+      transition:all 0.15s ease;
+    }
+    :root[data-look="mathematician"] .breadcrumb .bc-crumb:hover{
+      border-bottom-color:var(--accent);
+    }
+    :root[data-look="mathematician"] .breadcrumb .bc-crumb.current{
+      color:var(--accent); font-weight:700;
+      border-bottom:2px solid var(--accent);
+    }
+    :root[data-look="mathematician"] .breadcrumb .bc-sep{
+      color:var(--ink); opacity:0.5; font-size:16px;
+      margin:0 1px; font-weight:300;
+    }
+
+/* A sonar ping, because the static rings above are a DIAGRAM of sonar rather
      than sonar: the whole idea is a pulse. One ring expands from the centre and
      fades, every 5s, so the canvas is still for most of that.
 
@@ -2355,7 +2431,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
      very asymmetric radii for a hand-drawn feel, and slightly larger node text
      to give the writing more presence. */
   :root[data-look="sketchpad"]{ --sans:system-ui,sans-serif; --serif:system-ui,sans-serif; }
-  :root[data-look="sketchpad"] .node{ font-size:1.15em; }
+  :root[data-look="sketchpad"] .node{ font-size:calc(1.15em * var(--look-node-size, 1)); }
   :root[data-look="sketchpad"] .nodebar{
     border-radius:14px 4px 14px 4px;
     border:2px solid var(--ink); box-shadow:none;
@@ -2642,7 +2718,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   .nodebar .nb-div{width:1px;height:22px;background:color-mix(in srgb, var(--toolbar-text) 22%, transparent);margin:0 4px}
   .nodebar button{border:none;background:none;color:var(--toolbar-text);min-width:30px;height:30px;padding:0;border-radius:7px;font-size:14px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-family:inherit}
   .nodebar button:hover{background:color-mix(in srgb, var(--toolbar-text) 16%, transparent)}
-  .nodebar button.on{background:var(--accent);color:#fff}
+  .nodebar button.on{background:var(--accent);color:var(--accent-fg, #fff)}
   .nodebar button.size-btn{padding:0 8px;gap:3px;font-size:12.5px;font-weight:500;font-variant-numeric:tabular-nums}
   .nodebar button.color-btn{padding:0 6px;gap:2px}
   .nodebar button .caret{font-size:9px;opacity:.7}
@@ -2748,7 +2824,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
     content:counter(step);
     position:absolute; left:0; top:-2px;
     width:28px; height:28px; border-radius:50%;
-    background:var(--accent); color:#fff;
+    background:var(--accent); color:var(--accent-fg, #fff);
     display:flex; align-items:center; justify-content:center;
     font-weight:700; font-size:14px;
   }
@@ -2767,7 +2843,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   }
   .token-input input:focus{border-color:var(--accent); background:var(--node-bg, #fff)}
   .token-input button{
-    padding:10px 20px; background:var(--accent); color:#fff;
+    padding:10px 20px; background:var(--accent); color:var(--accent-fg, #fff);
     border:none; border-radius:8px; font-family:inherit; font-weight:600;
     cursor:pointer; font-size:14px;
   }
@@ -2863,7 +2939,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   .user-pill .user-initial{
     width:24px; height:24px; border-radius:50%; padding:0;
     display:flex; align-items:center; justify-content:center;
-    background:var(--accent); color:#fff; font-size:12px; font-weight:700; flex:0 0 auto;
+    background:var(--accent); color:var(--accent-fg, #fff); font-size:12px; font-weight:700; flex:0 0 auto;
   }
   .statusbar .user-pill .user-initial{width:20px; height:20px; font-size:11px}
   .user-pill span{padding:0 4px}
@@ -2913,7 +2989,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
     transition:.15s;
   }
   .donate-amt:hover{border-color:var(--accent); color:var(--accent)}
-  .donate-amt.on{background:var(--accent); color:#fff; border-color:var(--accent)}
+  .donate-amt.on{background:var(--accent); color:var(--accent-fg, #fff); border-color:var(--accent)}
   .donate-custom{
     flex:1.4; min-width:90px; display:flex; align-items:center; gap:4px;
     background:var(--paper-2); border:1.5px solid var(--line); border-radius:9px;
@@ -3297,7 +3373,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
     font-family:inherit; font-size:13px; font-weight:500; color:var(--ink);
   }
   .vf-actions button:hover{background:var(--hover)}
-  .vf-actions .vf-go{background:var(--accent); color:#fff; border-color:var(--accent)}
+  .vf-actions .vf-go{background:var(--accent); color:var(--accent-fg, #fff); border-color:var(--accent)}
   .vf-actions .vf-go:hover{background:var(--accent-deep)}
   .vf-skip{margin-right:auto; color:var(--ink-soft); border-color:transparent !important; background:transparent !important}
   .vf-skip:hover{color:var(--ink); background:var(--hover) !important}
@@ -3360,7 +3436,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   .node.multi-sel::after{
     content:'✓'; position:absolute; top:-9px; right:-9px;
     width:18px; height:18px; border-radius:50%;
-    background:var(--accent); color:#fff;
+    background:var(--accent); color:var(--accent-fg, #fff);
     font-size:11px; font-weight:700; line-height:18px; text-align:center;
     box-shadow:0 1px 4px rgba(0,0,0,.3); z-index:6;
   }
@@ -3561,7 +3637,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
     position:fixed; top:0; left:0; right:0; z-index:300;
     display:flex; align-items:center; gap:12px;
     padding:9px 16px; font-family:var(--sans); font-size:13px;
-    background:var(--accent); color:#fff;
+    background:var(--accent); color:var(--accent-fg, #fff);
     box-shadow:0 2px 12px rgba(0,0,0,.18);
   }
   .shared-banner .sb-eye{font-size:15px}
@@ -3595,6 +3671,9 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   body.shared-view .save-pill,
   body.shared-view .menu-toggle,
   body.shared-view #addChild,
+  body.shared-view #prefsBtn,
+  body.shared-view #tabsBtn,
+  body.shared-view #tabRow,
   body.shared-view #toggleSide{ display:none !important; }
   /* Sidebar is hidden in shared view - collapse the grid to one column so the
      stage fills the full width (otherwise it auto-places into the 0-width track
@@ -3624,7 +3703,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
     font-family:var(--sans); font-size:12.5px; font-weight:600;
   }
   .theme-panel .scale-opt:hover{ background:var(--hover); }
-  .theme-panel .scale-opt.active{ background:var(--accent); color:#fff; border-color:var(--accent); }
+  .theme-panel .scale-opt.active{ background:var(--accent); color:var(--accent-fg, #fff); border-color:var(--accent); }
 
   /* ===== Version history panel ===== */
   .hist-panel{ position:fixed; top:64px; right:18px; width:320px; max-height:70vh; z-index:60;
@@ -3643,13 +3722,13 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   .hist-actions{ display:flex; gap:6px; }
   .hist-actions button{ border:1px solid var(--chrome-edge); background:var(--node-bg); color:var(--ink);
     border-radius:7px; padding:5px 9px; font-size:12px; cursor:pointer; }
-  .hist-actions button:hover{ background:var(--accent); color:#fff; border-color:var(--accent); }
+  .hist-actions button:hover{ background:var(--accent); color:var(--accent-fg, #fff); border-color:var(--accent); }
   .hist-actions button.disabled{ opacity:.4; pointer-events:none; }
   .hist-banner{ position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:61;
     background:#2d2d2d; color:#fff; border-radius:999px; padding:8px 10px 8px 16px; display:flex; align-items:center; gap:10px;
     font-family:var(--sans); font-size:13px; box-shadow:0 10px 30px rgba(0,0,0,.3); }
   .hist-banner button{ border:none; border-radius:999px; padding:6px 12px; font-size:12px; cursor:pointer; font-weight:600; }
-  .hb-restore{ background:var(--accent); color:#fff; }
+  .hb-restore{ background:var(--accent); color:var(--accent-fg, #fff); }
   .hb-cancel{ background:rgba(255,255,255,.15); color:#fff; }
 
   /* ===== Build-prompt panel ===== */
@@ -3673,7 +3752,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   .bp-row{ display:flex; gap:8px; padding:0 14px 12px; }
   .bp-row button, .bp-run button{ border:1px solid var(--chrome-edge); background:var(--node-bg); color:var(--ink);
     border-radius:8px; padding:8px 12px; font-size:13px; cursor:pointer; font-family:var(--sans); }
-  .bp-row button.primary, .bp-run button.primary{ background:var(--accent); color:#fff; border-color:var(--accent); }
+  .bp-row button.primary, .bp-run button.primary{ background:var(--accent); color:var(--accent-fg, #fff); border-color:var(--accent); }
   .bp-run{ border-top:1px solid var(--chrome-edge); padding:12px 14px; overflow-y:auto; min-height:0; }
   .bp-run-row{ display:flex; gap:8px; margin-bottom:8px; }
   .bp-run select, .bp-run input{ flex:1; border:1px solid var(--chrome-edge); border-radius:8px; padding:7px 9px;
@@ -3685,7 +3764,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
   .bp-answer-acts{ display:flex; gap:8px; margin-top:8px; }
   .vf-doi-lookup{ display:flex; gap:8px; margin:0 0 12px; }
   .vf-doi-in{ flex:1; border:1px solid var(--chrome-edge); border-radius:8px; padding:8px 10px; background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:13px; }
-  .vf-doi-go{ border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:8px; padding:8px 14px; cursor:pointer; font-weight:600; }
+  .vf-doi-go{ border:1px solid var(--accent); background:var(--accent); color:var(--accent-fg, #fff); border-radius:8px; padding:8px 14px; cursor:pointer; font-weight:600; }
   .vf-doi-go:disabled{ opacity:.6; cursor:default; }
 
   /* ===== Presentation mode ===== */
@@ -3749,7 +3828,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
 #collabPill button{ border:none; background:transparent; cursor:pointer; font-size:12px; opacity:.7; padding:2px 5px; border-radius:6px; color:var(--ink-soft); }
 #collabPill button:hover{ opacity:1; background:var(--hover, rgba(127,127,127,.18)); }
 #collabPill .cp-save{ opacity:1; font-weight:600; color:var(--accent); padding:3px 9px; border:1px solid var(--chrome-edge); border-radius:999px; }
-#collabPill .cp-save:hover{ background:var(--accent); color:#fff; border-color:var(--accent); }
+#collabPill .cp-save:hover{ background:var(--accent); color:var(--accent-fg, #fff); border-color:var(--accent); }
 
 /* Export menu: small uppercase section labels grouping the items. */
 .ex-grp{ font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.6px;
@@ -3791,7 +3870,7 @@ body.cloud-edit .app{ padding-top:var(--shared-banner-h, 44px); }
 .access-modal .am-user::placeholder{ color:var(--ink-soft); }
 .access-modal .am-user:focus{ outline:none; border-color:var(--accent); }
 .access-modal .am-newrole{ background:var(--paper-2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:8px; }
-.access-modal .am-addbtn{ background:var(--accent); border:none; color:#fff; border-radius:8px; padding:8px 14px; font-weight:600; cursor:pointer; }
+  .access-modal .am-addbtn{ background:var(--accent); border:none; color:var(--accent-fg, #fff); border-radius:8px; padding:8px 14px; font-weight:600; cursor:pointer; }
 .access-modal .am-addbtn:hover{ background:var(--accent-deep); }
 .access-modal .am-vis{ display:flex; flex-direction:column; gap:5px; }
 .access-modal .am-visrow{ display:flex; align-items:center; justify-content:space-between; padding:5px 10px; background:var(--paper-2); border:1px solid var(--line); border-radius:8px; font-size:13px; }
@@ -3803,7 +3882,7 @@ body.cloud-edit .app{ padding-top:var(--shared-banner-h, 44px); }
   background:color-mix(in srgb, var(--accent) 14%, transparent); border:1px solid color-mix(in srgb, var(--accent) 40%, transparent); color:var(--ink); }
 
 /* Shared-map indicator: a compact themed pill (replaces the full-width banner). */
-.user-pill.shared-pill{ background:var(--accent); color:#fff; border-color:transparent; font-weight:600; padding:3px 12px; }
+.user-pill.shared-pill{ background:var(--accent); color:var(--accent-fg, #fff); border-color:transparent; font-weight:600; padding:3px 12px; }
 .user-pill.shared-pill img, .user-pill.shared-pill button{ display:none !important; }
 .user-pill.shared-pill span{ display:inline-block !important; padding:0; }
 /* Pill-mode has no banner, so reclaim the space the banner used to reserve. */
@@ -3933,7 +4012,7 @@ body.ui-classic .new-map-row #newMap{
 }
 body.ui-classic .new-map-row #newMap:hover{border-color:var(--accent);color:var(--accent);background:var(--node-bg)}
 body.ui-classic .new-map-row .new-map-caret{
-  width:36px;padding:0;background:var(--accent);color:#fff;border:none;
+  width:36px;padding:0;background:var(--accent);color:var(--accent-fg, #fff);border:none;
   border-left:1px solid color-mix(in srgb, #000 18%, var(--accent));
   border-top-right-radius:11px;border-bottom-right-radius:11px;
   cursor:pointer;font-size:13px;font-family:inherit;
@@ -4057,7 +4136,7 @@ body.ui-zen.zen-chrome .topbar{opacity:1;transform:translateX(-50%) translateY(0
 /* Pinned: bar stays visible without hovering the top edge (state in localStorage).
    Declared BEFORE the focus-mode rules below so focus mode still hides it. */
 body.ui-zen.zen-pinned .topbar{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto}
-body.ui-zen #zenPin.on{background:var(--accent);color:#fff}
+body.ui-zen #zenPin.on{background:var(--accent);color:var(--accent-fg, #fff)}
 body.ui-zen .tb-group{background:none;border:none;border-radius:0;padding:0;box-shadow:none}
 body.ui-zen .tb-sep{width:1px;height:22px;background:var(--chrome-edge);flex:0 0 auto}
 body.ui-zen .search-wrap{background:transparent;border:none;box-shadow:none;flex:0 0 auto}
@@ -4403,16 +4482,16 @@ input, textarea, select{
 .bp-task-label{ font-size:11px; opacity:.6; margin-bottom:2px; }
 .bp-task-chips{ display:flex; gap:4px; flex-wrap:wrap; margin-bottom:4px; }
 .bp-chip{ font-size:11px; padding:2px 6px; border-radius:3px; border:1px solid var(--chrome-edge); background:var(--node-bg); color:var(--ink); cursor:pointer; }
-.bp-chip:hover{ background:var(--accent); color:#fff; }
+.bp-chip:hover{ background:var(--accent); color:var(--accent-fg, #fff); }
 .bp-chip-wrap{ display:inline-flex; align-items:stretch; }
 .bp-chip-wrap .bp-chip{ border-top-right-radius:0; border-bottom-right-radius:0; }
 .bp-chip-del{ font-size:11px; line-height:1; padding:0 5px; cursor:pointer; color:var(--ink-soft);
   border:1px solid var(--chrome-edge); border-left:none; border-radius:0 3px 3px 0; background:var(--node-bg); }
-.bp-chip-del:hover{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  .bp-chip-del:hover{ background:var(--accent); border-color:var(--accent); color:var(--accent-fg, #fff); }
 .bp-save{ font-size:11px; padding:2px 6px; border-radius:3px; cursor:pointer; color:var(--ink-soft);
   border:1px dashed var(--chrome-edge); background:transparent; }
 .bp-save:hover{ border-color:var(--accent); color:var(--accent); }
-.bp-chip.active{ background:var(--accent); color:#fff; }
+.bp-chip.active{ background:var(--accent); color:var(--accent-fg, #fff); }
 .bp-instruction{ width:100%; min-height:48px; font-family:inherit; font-size:12px; padding:4px 6px; border:1px solid var(--chrome-edge); border-radius:3px; background:var(--node-bg); color:var(--ink); resize:vertical; }
 /* Expanded = the "Run with API" section is open. The panel may use more of the
    window than its 80vh default, but never more than fits below its own top
@@ -4420,3 +4499,9 @@ input, textarea, select{
    gap it keeps on the right). A fixed height here once made it fill the whole
    screen and run 64px past the bottom edge, clipping the Send row. */
 .bp-panel.bp-expanded{ max-height:calc(100vh - 82px); }
+
+/* Look config radius override - only active when user has set a custom radius */
+.user-look-radius .vf-card{ border-radius:var(--look-radius) !important; }
+.user-look-radius .minimap{ border-radius:var(--look-radius) !important; }
+.user-look-radius .toast{ border-radius:var(--look-radius) !important; }
+.user-look-radius .search-wrap{ border-radius:var(--look-radius) !important; }
