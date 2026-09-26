@@ -52,6 +52,45 @@ describe('self-hosted server', () => {
     assert.equal((await fetch(base + '/healthz')).status, 200);
   });
 
+  // Static assets used to go out as `no-store`, which forbade the browser from
+  // keeping the bytes at all, so every load re-downloaded ~360 KB gzipped. The
+  // freshness rule sw.js depends on is only that a client must never SERVE an
+  // old build without asking - app.js and styles.css keep their URLs forever -
+  // and `no-cache` plus a validator keeps exactly that while making the ask
+  // cost nothing.
+  describe('static assets revalidate instead of re-downloading', () => {
+    test('every asset carries a validator and is never stored blind', async () => {
+      for (const p of ['/', '/app.js', '/styles.css', '/sw.js']) {
+        const r = await fetch(base + p);
+        assert.equal(r.status, 200, p);
+        const cc = r.headers.get('cache-control') || '';
+        assert.match(cc, /no-cache/, `${p} must still force a round trip`);
+        assert.doesNotMatch(cc, /no-store/, `${p} must be allowed to keep the bytes between round trips`);
+        assert.ok(r.headers.get('etag'), `${p} has no ETag, so the round trip cannot answer 304`);
+      }
+    });
+
+    test('a matching If-None-Match answers 304 with no body', async () => {
+      const first = await fetch(base + '/app.js');
+      const etag = first.headers.get('etag');
+      const again = await fetch(base + '/app.js', { headers: { 'If-None-Match': etag } });
+      assert.equal(again.status, 304);
+      assert.equal(again.headers.get('etag'), etag, 'the 304 must re-state the validator');
+      assert.equal((await again.text()).length, 0, 'a 304 must not carry a body');
+    });
+
+    test('a stale validator is answered with the new bytes', async () => {
+      const r = await fetch(base + '/app.js', { headers: { 'If-None-Match': 'W/"not-the-current-build"' } });
+      assert.equal(r.status, 200);
+      assert.ok((await r.text()).length > 1000, 'a miss must send the file');
+    });
+
+    test('two different files never share a validator', async () => {
+      const [a, b] = await Promise.all([fetch(base + '/app.js'), fetch(base + '/styles.css')]);
+      assert.notEqual(a.headers.get('etag'), b.headers.get('etag'));
+    });
+  });
+
   test('a map round-trips through PUT, GET, list and DELETE', async () => {
     const m = { title: 'Round trip', color: '#3a6ea5', rootId: 'r', nodes: { r: { id: 'r', text: 'R', parent: null } }, links: [] };
     assert.equal((await json('PUT', '/api/maps/t1', m)).status, 200);

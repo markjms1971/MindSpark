@@ -55,7 +55,16 @@ describe('look effect layer paints under the map', () => {
     const sync = extractFunction('_syncLookFx');
     assert.match(sync, /stage\.insertBefore\(_fxEl, stage\.firstChild\)/);
     assert.doesNotMatch(sync, /stage\.appendChild\(_fxEl\)/);
-    assert.match(CSS.match(/\.wave-layer\{[^}]*\}/)[0], /z-index:0/);
+    // The sailboat mounts three boats AND the swell they ride; none may climb
+    // above the map on a z-index of its own. The three boat boxes share one
+    // grouped rule, so match that list rather than a bare single selector.
+    const rules = [
+      CSS.match(/\.wave-layer,\.wave-layer-mid,\.wave-layer-far\{[^}]*\}/),
+      CSS.match(/\.swell-layer\{[^}]*\}/),
+    ];
+    assert.ok(rules[0], 'the boat layers rule');
+    assert.ok(rules[1], 'the swell rule');
+    for (const rule of rules) assert.match(rule[0], /z-index:0/);
   });
 
   test('the side-toolbar rail is a solid column above the canvas', () => {

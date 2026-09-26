@@ -8,7 +8,7 @@
     "--paper": "#f0f9ff",
     "--paper-2": "#e0f2fe",
     "--ink": "#1e3a5f",
-    "--ink-soft": "#5b7a9a",
+    "--ink-soft": "#536f8d",
     "--line": "#bae6fd",
     "--line-2": "#a4d9f5",
     "--accent": "#0ea5e9",
@@ -20,7 +20,7 @@
     "--node-ink": "#1e3a5f",
     "--canvas-dot": "#bae6fd",
     "--stage-glow": "rgba(14,165,233,.05)",
-    "--link": "#0ea5e9",
+    "--link": "#0a74a5",
     "--shadow": "0 1px 3px rgba(30,58,95,.10),0 8px 24px rgba(30,58,95,.08)",
     "--shadow-lg": "0 12px 40px rgba(30,58,95,.16)"
   }

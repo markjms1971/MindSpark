@@ -100,6 +100,19 @@ describe('validateLookConfig - font', () => {
   test('non-strings leave the default in place', () => {
     assert.equal(handwritten({ handwritten: { font: 42 } }).font, DEFAULTS.handwritten.font);
   });
+
+  test('the stale matrix JetBrains Mono default migrates to Courier New', () => {
+    assert.equal(DEFAULTS.matrix.font, '"Courier New",monospace');
+    const got = validateLookConfig({
+      matrix: { font: '"JetBrains Mono",monospace', nodeSize: 1, radius: 4 },
+    }).matrix;
+    assert.equal(got.font, '"Courier New",monospace');
+  });
+
+  test('a deliberate non-default matrix font is kept', () => {
+    const got = validateLookConfig({ matrix: { font: '"Fira Code",monospace' } }).matrix;
+    assert.equal(got.font, '"Fira Code",monospace');
+  });
 });
 
 describe('lookConfigFor - the dialog view', () => {
@@ -124,19 +137,21 @@ describe('lookConfigFor - the dialog view', () => {
 // left the LAST map's overrides in place - so the empty canvas after deleting
 // the final map kept that map's font until the next load.
 describe('applyLookConfigVars - no map means the look defaults, not the last map', () => {
-  function harness() {
+  function harness(lookId = 'lab') {
     const set = {}, removed = new Set();
     const root = {
-      getAttribute: () => 'lab',
+      getAttribute: () => lookId,
       style: {
         setProperty: (k, v) => { set[k] = v; removed.delete(k); },
         removeProperty: k => { delete set[k]; removed.add(k); },
       },
+      classList: { add(){}, remove(){} },
     };
     const state = { map: null };
-    const fn = new Function('document', 'LOOK_CONFIG_DEFAULTS', 'state',
-      `${extractFunction('applyLookConfigVars').replace(/\bmap\b/g, 'state.map')} return applyLookConfigVars;`)(
-      { documentElement: root }, DEFAULTS, state);
+    const fn = new Function('document', 'LOOK_CONFIG_DEFAULTS', 'LOOK_CONFIG_BOUNDS', 'state',
+      `${extractFunction('validateLookConfig')}
+       ${extractFunction('applyLookConfigVars').replace(/\bmap\b/g, 'state.map')} return applyLookConfigVars;`)(
+      { documentElement: root }, DEFAULTS, BOUNDS, state);
     return { state, set, removed, apply: fn };
   }
 
@@ -152,5 +167,13 @@ describe('applyLookConfigVars - no map means the look defaults, not the last map
     assert.equal(h.set['--sans'], DEFAULTS.lab.font, 'font back to the look default');
     assert.ok(h.removed.has('--look-node-size'), 'size override cleared');
     assert.ok(h.removed.has('--look-radius'), 'radius override cleared');
+  });
+
+  test('a stale matrix JetBrains Mono lookConfig applies Courier New, not the old font', () => {
+    const h = harness('matrix');
+    h.state.map = { lookConfig: { matrix: { font: '"JetBrains Mono",monospace', nodeSize: 1, radius: 4 } } };
+    h.apply();
+    assert.equal(h.set['--sans'], '"Courier New",monospace');
+    assert.equal(h.set['--serif'], '"Courier New",monospace');
   });
 });

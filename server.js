@@ -20,6 +20,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const PORT = process.env.PORT || 3000;
@@ -317,14 +318,34 @@ const server = http.createServer(async (req, res) => {
       let st = null;
       try { st = fs.statSync(full); } catch (e) { /* falls through to 404 */ }
       if (st && st.isFile()) {
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         const entry = fileEntry(full, st);
         // The page's own <meta> policy gets the same extra origins as the header.
-        if (EXTRA_CONNECT && path.extname(full) === '.html') {
-          if (entry.html === undefined) entry.html = Buffer.from(withExtraConnectHtml(entry.data.toString('utf8')));
-          return send(res, 200, entry.html, MIME['.html'], req);
+        const rewritten = EXTRA_CONNECT && path.extname(full) === '.html';
+        if (rewritten && entry.html === undefined) {
+          entry.html = Buffer.from(withExtraConnectHtml(entry.data.toString('utf8')));
         }
-        return send(res, 200, entry.data, MIME[path.extname(full)] || 'application/octet-stream', req, entry);
+        const body = rewritten ? entry.html : entry.data;
+        // `no-cache` still forces a round trip before anything is reused, which
+        // is the invariant sw.js is built around: app.js and styles.css keep
+        // their URLs forever, so a client must never serve an old build off its
+        // own shelf. `no-store` went further and forbade keeping the bytes at
+        // all, which made that round trip a full re-download of ~360 KB
+        // gzipped on every single load. With a validator the same round trip
+        // answers 304 and sends nothing, so freshness is unchanged and only
+        // the bytes go away. Weak, because the gzipped and identity encodings
+        // of one file are the same thing semantically and share the tag.
+        const key = rewritten ? 'htmlEtag' : 'etag';
+        if (entry[key] === undefined) {
+          entry[key] = 'W/"' + crypto.createHash('sha1').update(body).digest('base64url') + '"';
+        }
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('ETag', entry[key]);
+        if (req.headers['if-none-match'] === entry[key]) {
+          res.writeHead(304);
+          return res.end();
+        }
+        if (rewritten) return send(res, 200, body, MIME['.html'], req);
+        return send(res, 200, body, MIME[path.extname(full)] || 'application/octet-stream', req, entry);
       }
     }
 

@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { extractConst } from './helpers/load-app-fns.mjs';
+import { extractConst, extractFunction } from './helpers/load-app-fns.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const APP = readFileSync(join(ROOT, 'public', 'app.js'), 'utf8');
@@ -58,7 +58,7 @@ function looksWithStageTexture() {
 }
 
 // Empty, and it should stay that way: every look that textures .stage now
-// reproduces it in the PNG export. scientist, architect, alien and psycho sat
+// reproduces it in the PNG export. scientist, architect and psycho sat
 // here until their painter branches were written.
 const EXPORT_TEXTURE_MISSING = [];
 // Empty: `sketchpad` sat here with no look to belong to until it was deleted.
@@ -70,11 +70,11 @@ const ORPHAN_CONFIG = [];
 // fixed 131x45 either way, so this costs nothing in layout. Listed rather than
 // dropping the rule, so the next name still has to justify itself.
 const SINGLE_LINE_NAMES = ['groot'];
-// Empty, and it should stay that way. Four looks were on this list: psycho
-// (#ff0033), alien (#ff6b6b), desert (#966e3a) and groot (a converted raster
-// whose ~5,200 fills carried their own colours). Two of them were invisible
-// until this scan started decoding %23, and groot's until it started reading
-// rgba() - which is why it now reads all three notations.
+// Empty, and it should stay that way. Three looks were on this list: psycho
+// (#ff0033), desert (#966e3a) and groot (a converted raster whose ~5,200
+// fills carried their own colours). Two of them were invisible until this
+// scan started decoding %23, and groot's until it started reading rgba() -
+// which is why it now reads all three notations.
 const HARDCODED_HUE = [];
 
 // A grey is a contrast choice, not a theme colour. The tolerance is for
@@ -189,6 +189,87 @@ describe('look registry', () => {
     }
   });
 
+  test('the sailboat scenery survives into the PNG export', () => {
+    // The screen and the PNG share one source - the live mask on each layer -
+    // but the export still has to be told which layers exist. Forget one and
+    // the boats come out floating on dry paper, or the water comes out with
+    // nothing riding it, with nothing on screen to show the PNG is wrong.
+    assert.match(APP, /sailboat:\['wave-layer','wave-layer-mid','wave-layer-far','swell-layer'\]/,
+      'the sailboat mounts three boats (top-most first) and the swell');
+    const src = extractFunction('exportPNG');
+    assert.match(src, /for\(const sel of \['\.swell-layer','\.wave-layer-far','\.wave-layer-mid','\.wave-layer'\]\)/,
+      'the export reads every layer the look mounts, bottom-first so the boats land on top');
+    assert.match(src, /scenery\.forEach\(/,
+      'and paints each one at the transform the screen is showing');
+    // Placement is part of the look too: the fleet is a bottom-anchored band
+    // that does not repeat upward, and the PNG has to band the boats the same
+    // way instead of tiling them over the whole image.
+    assert.match(src, /cs\.maskPosition/,
+      'the export reads where each tile hangs, so the PNG bands the fleet as the screen does');
+    assert.match(src, /cs\.maskRepeat/,
+      'the export reads whether a layer repeats upward, so boats cannot spread over the whole PNG');
+  });
+
+  test('the fleet is a bottom band whose hulls are still on the swell', () => {
+    // Waves stay a full-canvas texture; only the fleet is confined to the
+    // bottom of the stage. The mechanism matters as much as the result: the
+    // band comes from a tile that does not repeat upward and hangs off the
+    // bottom of the layer box, so its upper edge is a place where the tile is
+    // empty rather than a cut through it. All four layers must then hang off
+    // the SAME edge - their grids are measured from the box bottom, so a hull
+    // stays on its line at every window height. Anchoring one and not another
+    // slides the fleet off the water by (box height mod tile height) on resize.
+    const lookRule = sel => {
+      const at = CSS.indexOf(sel);
+      assert.notEqual(at, -1, `${sel} is gone`);
+      return CSS.slice(at, CSS.indexOf('}', at));
+    };
+    for (const name of ['wave-layer', 'wave-layer-mid', 'wave-layer-far']) {
+      const rule = lookRule(`:root[data-look="sailboat"] .${name}{`);
+      assert.match(rule, /mask-repeat:repeat-x/,
+        'a fleet tile that repeats upward paints boats over the whole canvas, not a bottom band');
+      assert.match(rule, /mask-position:0 100%/, 'the band has to hang off the bottom of the layer box');
+      assert.match(rule, /mask-size:400px 400px/, 'each boat rides one square 400px tile');
+    }
+    assert.match(lookRule(':root[data-look="sailboat"] .swell-layer{'), /mask-position:0 100%/,
+      'the water must be measured from the same edge as the fleet, or the hulls float off the lines');
+
+    // The tiles themselves: one boat per layer on its own wave row, every hull
+    // on a swell line and inside the bottom seven waves (lines land at
+    // 40/80/120/160/240/280/320 and 360 in a 400px tile, measured from its
+    // bottom edge: every multiple of 40 except the 200px seams, which carry
+    // no line). One boat per 400px tile is what halves how often a wave line
+    // carries a boat compared with the old three-per-200px tile.
+    const hulls = [];
+    for (const suffix of ['', '-mid', '-far']) {
+      const m = new RegExp(`--wave-mask${suffix}:url\\("data:image\\/svg\\+xml,([^"]+)"\\)`).exec(CSS);
+      assert.ok(m, `--wave-mask${suffix} is gone, so a boat has nothing to draw`);
+      const svg = decodeURIComponent(m[1]);
+      assert.match(svg, /viewBox='0 0 400 400'/, 'a boat tile is one 400px square');
+      const boats = [...svg.matchAll(/translate\(([\d.]+) ([\d.]+)\)(?: scale\(([\d.]+)\))?/g)];
+      assert.equal(boats.length, 1, `--wave-mask${suffix} carries one boat, one per wave row`);
+      for (const b of boats) {
+        const scale = b[3] ? +b[3] : 1;
+        const up = 400 - (+b[2] + 8 * scale);   // hull bottom measured from the tile bottom
+        assert.ok(up <= 320, `a hull floats ${up}px up, past the bottom seven waves`);
+        assert.ok([40, 80, 120, 160].some(c => Math.abs(up % 200 - c) < 1.5),
+          `a hull ends ${up}px from the tile bottom, which is not a wave line`);
+        hulls.push({ y0: +b[2] - 30 * scale, y1: +b[2] + 8 * scale });
+      }
+    }
+
+    // The rows have to keep their distance. The layers drift at three speeds,
+    // so the boats slide past each other horizontally and only the row gaps
+    // hold at every phase: measured hull box to hull box those are 81px, 88px
+    // and 202px. 60px fails the old layout (a 42px gap between two rows) and
+    // leaves this one room to be nudged again.
+    let closest = Infinity;
+    for (let i = 0; i < hulls.length; i++) for (let j = i + 1; j < hulls.length; j++) {
+      closest = Math.min(closest, Math.max(0, hulls[i].y0 - hulls[j].y1, hulls[j].y0 - hulls[i].y1));
+    }
+    assert.ok(closest >= 60, `the nearest rows are ${closest.toFixed(1)}px apart, close enough to read as one blob`);
+  });
+
   test('no look hardcodes a hue instead of using the theme', () => {
     // A Look is colour-independent by contract: colour comes from whichever
     // Colour Theme is active, so a literal hue inside a data-look rule only
@@ -220,7 +301,7 @@ describe('look registry', () => {
   });
 });
 
-describe('look animations stay off the main thread', () => {
+describe('look motion stays composited or canvas-bound', () => {
   // A Look's animation runs for as long as someone has that look selected, so
   // it has to be free. Only transform and opacity are composited; everything
   // else repaints, and a full-viewport layer repainting every frame is the
@@ -263,21 +344,62 @@ describe('look animations stay off the main thread', () => {
 
   test('an animated look layer is promoted and contained', () => {
     // will-change:transform gives it its own compositing layer; contain:paint
-    // stops invalidation escaping into the stage around it.
-    const at = CSS.indexOf('.wave-layer{');
-    assert.notEqual(at, -1, 'the sailboat wave layer is gone');
-    const rule = CSS.slice(at, CSS.indexOf('}', at));
-    assert.match(rule, /will-change:\s*transform/, 'the wave layer must be promoted');
-    assert.ok(!/will-change:[^;]*background/.test(rule),
-      'will-change on background-position promotes nothing and just costs memory');
-    assert.match(rule, /contain:\s*paint/);
+    // stops invalidation escaping into the stage around it. The sailboat
+    // mounts three boat layers (one grouped box rule) plus the swell they
+    // ride, and a missing promotion on any of them puts its animation back on
+    // the main thread.
+    const rules = [
+      ['the three boat layers', CSS.match(/\.wave-layer,\.wave-layer-mid,\.wave-layer-far\{[^}]*\}/)],
+      ['the swell', CSS.match(/\.swell-layer\{[^}]*\}/)],
+    ];
+    for (const [what, rule] of rules) {
+      assert.ok(rule, `the sailboat's ${what} rule is gone`);
+      assert.match(rule[0], /will-change:\s*transform/, `${what} must be promoted`);
+      assert.ok(!/will-change:[^;]*background/.test(rule[0]),
+        'will-change on background-position promotes nothing and just costs memory');
+      assert.match(rule[0], /contain:\s*paint/, `${what} must contain its own invalidation`);
+    }
+  });
+
+  test('prefers-reduced-motion hides every sailboat layer, not just one', () => {
+    // The three boat layers share one grouped rule; the swell keeps its own.
+    assert.match(CSS, /\.wave-layer,\.wave-layer-mid,\.wave-layer-far\{ display:none !important; \}/,
+      'a boat layer keeps animating for a user who asked the OS for less motion');
+    assert.match(CSS, /\.swell-layer\{ display:none !important; \}/,
+      'the swell keeps animating for a user who asked the OS for less motion');
   });
 
   test('nothing drives the wave from a rAF loop any more', () => {
     assert.ok(!/_tickWave|_waveRAF/.test(APP),
-      'the wave is CSS-driven now; a rAF loop writing styles puts it back on the main thread');
+      'the wave runs on CSS keyframes and canvas now; a rAF loop writing styles puts it back on the main thread');
     assert.ok(!/\.style\.backgroundPosition/.test(APP),
-      'background-position cannot be composited - animate transform instead');
+      'background-position cannot be composited - animate transform or draw to canvas instead');
+  });
+
+  test('the gondola line draws to a canvas and never writes element styles', () => {
+    const gondolas = extractFunction('_drawGondolas');
+    assert.match(gondolas, /ctx\.clearRect\(/, 'every frame starts from a blank bitmap or the cabins smear');
+    assert.match(gondolas, /ctx\.stroke\(/, 'the cable and cabins are painted, not CSS');
+    assert.match(gondolas, /quadraticCurveTo\(cx, cy, x1, y0\)/, 'the cable sags');
+    for (const [name, src] of [['_drawGondolas', gondolas]]) {
+      assert.ok(!/\.style\./.test(src), `${name} must never write element styles`);
+      assert.ok(!/clientWidth|clientHeight|getComputedStyle/.test(src),
+        `${name} reads layout per frame, which forces reflow`);
+    }
+    assert.match(CSS, /\.mountain-layer-canvas\{[^}]*\}/, 'the canvas needs a fill rule');
+    assert.match(CSS, /\.mountain-layer\{[^}]*z-index:0/,
+      'the scenery layer must paint under the map');
+  });
+
+  test('every canvas look shares one lifecycle', () => {
+    const sync = extractFunction('_syncLookFx');
+    assert.match(sync, /CANVAS_FX\[cls\]/, 'look switches dispatch through the registry');
+    assert.ok(!/matrix-rain|mountain-layer/.test(sync),
+      '_syncLookFx stays registry-driven, with no per-look branch to rot');
+    assert.match(APP, /'matrix-rain':\s*\{[^}]*draw:_drawMatrixRain/,
+      'the registry wires matrix rain to its painter');
+    assert.match(APP, /'mountain-layer':\s*\{[^}]*draw:_drawGondolas/,
+      'the registry wires the mountain gondolas to their painter');
   });
 });
 
