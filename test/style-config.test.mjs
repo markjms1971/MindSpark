@@ -65,6 +65,14 @@ describe('validateStyleConfig - numeric knobs', () => {
     assert.equal(neon({ neon: { radius: 9.5 } }).radius, 9.5);
     assert.equal(neon({ neon: { glow: 7.25 } }).glow, 7.25);
   });
+  test('tilt is clamped to its bounds', () => {
+    assert.equal(validateStyleConfig({ sketch: { tilt: 99 } }).sketch.tilt, BOUNDS.tilt[1]);
+    assert.equal(validateStyleConfig({ sketch: { tilt: -4 } }).sketch.tilt, BOUNDS.tilt[0]);
+  });
+
+  test('the sketch default is a small non-zero tilt', () => {
+    assert.equal(DEFAULTS.sketch.tilt, 2);
+  });
 
   test('strings, booleans and NaN are ignored, not coerced', () => {
     const got = neon({ neon: { edgeWidth: 'fat', radius: true, dash: NaN } });

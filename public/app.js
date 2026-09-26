@@ -1474,9 +1474,14 @@ function render(){
     return;
   }
   $('#empty').style.display='none';
-  const mapStyle = map.style || 'modern';
+  const mapStyle = resolvedMapStyle(map);
   viewport.dataset.style = mapStyle;
   viewport.dataset.layout = map.layout || 'balanced';
+  // Sketch cards carry a deterministic per-id tilt as --tilt (sketchTiltDeg).
+  // Resolved once; only freshly built elements receive it, and a style or
+  // styleConfig change lands in _metricsKey, which busts every node signature
+  // and rebuilds them - so a cached element can never wear a stale angle.
+  const _tiltAmp = mapStyle==='sketch' ? sketchTiltAmp() : 0;
   applyStyleConfigVars();
   applyLookConfigVars();
   applyThemeConfigVars();
@@ -1519,13 +1524,30 @@ function render(){
     const el=document.createElement('div');
     el.className='node'+(id===map.rootId?' root':'')+(id===sel?' sel':'')+(hasKids&&n.collapsed?' collapsed':'')+(n.side==='left'?' left':'');
     el.dataset.id=id;
-    if(zd[id]) el.setAttribute('data-depth', zd[id]);   // zebra parity for uncoloured nodes
+    if(zd[id] && mapStyle!=='terminal') el.setAttribute('data-depth', zd[id]);   // zebra parity for uncoloured nodes (terminal has no card bg)
     el.style.left=n.x+'px'; el.style.top=n.y+'px';
+    if(_tiltAmp){
+      el.style.setProperty('--tilt', sketchTiltDeg(id, _tiltAmp).toFixed(2)+'deg');
+    }
     if(id===map.rootId){
-      const _isInk = (map.style||'modern')==='ink';
-      const _base = map.color||'#e0613a';
-      el.style.background = _isInk ? _base : colorFor(_base);
-      el.style.color = pickContrast(_isInk ? _base : colorFor(_base));
+      const _isInk = mapStyle==='ink';
+      if(mapStyle==='terminal'){
+        // Terminal root card is empty by default; honour an explicit card colour if the user set one
+        const _mc=n.color;
+        if(_mc && _mc!=='#fff' && _mc!=='#ffffff'){
+          el.style.background=_mc;
+          el.style.color=pickContrast(_mc);
+          el.style.borderColor='';
+        } else {
+          el.style.background='';
+          el.style.color='';
+          el.style.borderColor='';
+        }
+      } else {
+        const _base = map.color||'#e0613a';
+        el.style.background = _isInk ? _base : colorFor(_base);
+        el.style.color = pickContrast(_isInk ? _base : colorFor(_base));
+      }
     } else if(n.color && n.color!=='#fff' && n.color!=='#ffffff'){
       el.style.background = n.color;
       el.style.color = pickContrast(n.color);
@@ -2342,7 +2364,7 @@ function stairEdgePath(p, n){
   return `M${sx},${sy} L${ncx},${sy} L${ncx},${edgeY}`;
 }
 function drawEdges(hidden){
-  const style=map.style||'modern';
+  const style=resolvedMapStyle(map);
   const layout=map.layout||'balanced';
   const segs=[];
   for(const id in map.nodes){
@@ -2459,7 +2481,8 @@ function drawEdges(hidden){
   });
   edges.innerHTML =
     edgePathsHTML(merged) +
-    (linkPath ? `<path d="${linkPath}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-dasharray="2 6" stroke-linecap="round" opacity="0.85"/>` : '');
+    (linkPath ? `<path d="${linkPath}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-dasharray="2 6" stroke-linecap="round" opacity="0.85"/>` : '') +
+    buildEdgeLabels(hidden, layout);
 }
 // Build <path> elements from merged edge segments (Map key → path data).
 // Pure so tests can pin the stroke/width/dash fallbacks - the 'null' string
@@ -2472,6 +2495,39 @@ function edgePathsHTML(merged){
     const sw     = (width && width!=='null') ? width : 'var(--edge-width, 2.2)';
     return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round"${dash&&dash!=='null'?` stroke-dasharray="${dash}"`:''}/>`;
   }).join('');
+}
+// Branch labels: text rendered above the branch line for nodes that have a
+// `label` property. Positioned at the midpoint of the parent-child connection,
+// offset above the line. Only horizontal (balanced/right/left) layouts supported.
+function buildEdgeLabels(hidden, layout){
+  if(layout==='radial' || layout==='grid' || layout==='matrix') return '';
+  let svg='';
+  for(const id in map.nodes){
+    const n=map.nodes[id]; if(!n.label || hidden.has(id)) continue;
+    const p=map.nodes[n.parent]; if(!p || hidden.has(n.parent)) continue;
+    const leftSide=(n.side==='left');
+    let x1,y1,x2,y2,horizontal=true;
+    if(layout==='down'){
+      horizontal=false;
+      x1=p.x+(p.w||0)/2; y1=p.y+(p.h||0);
+      x2=n.x+(n.w||0)/2; y2=n.y;
+    } else if(layout==='up'){
+      horizontal=false;
+      x1=p.x+(p.w||0)/2; y1=p.y;
+      x2=n.x+(n.w||0)/2; y2=n.y+(n.h||0);
+    } else {
+      x1=leftSide ? p.x : p.x+(p.w||0);
+      y1=p.y+(p.h||0)/2;
+      x2=leftSide ? n.x+(n.w||0) : n.x;
+      y2=n.y+(n.h||0)/2;
+    }
+    const mx=(x1+x2)/2, my=(y1+y2)/2;
+    const offY=horizontal ? -12 : 0;
+    const offX=horizontal ? 0 : -12;
+    const escaped=String(n.label).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    svg += `<text x="${mx+offX}" y="${my+offY}" text-anchor="middle" dominant-baseline="auto" fill="var(--ink-soft, #636e72)" font-family="var(--sans)" font-size="11" font-weight="500" pointer-events="none" style="text-shadow:0 0 3px var(--paper,#fff),0 0 6px var(--paper,#fff)">${escaped}</text>`;
+  }
+  return svg;
 }
 function edgePath(x1,y1,x2,y2,leftSide,horizontal,style){
   switch(style){
@@ -2804,7 +2860,9 @@ function flipAnimateNodes(before){
     const dx=b.x-n.x, dy=b.y-n.y;
     if(Math.abs(dx)<0.5 && Math.abs(dy)<0.5) return;   // negligible/no movement
     el.style.transition='none';
-    el.style.transform=`translate(${dx}px,${dy}px)`;
+    // rotate(var(--tilt,0deg)) keeps a sketch card's tilt through the slide;
+    // for every other style --tilt is unset and this is a no-op rotate(0).
+    el.style.transform=`translate(${dx}px,${dy}px) rotate(var(--tilt,0deg))`;
     toAnimate.push(el);
   });
   if(!toAnimate.length) return;
@@ -4274,11 +4332,14 @@ function addNode(parentId,asSibling){
   const pn=map.nodes[parent]||map.nodes[map.rootId];
   const side = parent===map.rootId ? (childrenOf(map.rootId).length%2? 'left':'right') : (pn.side||'right');
   const id=uid();
-  // Pick a random soft color from the palette (skip plain white at index 0)
+  // Pick a random soft color from the palette (skip plain white at index 0).
+  // Terminal style defaults cards to empty, so new nodes get no colour there.
+  const _termNew = resolvedMapStyle(map)==='terminal';
   const palette=NODE_COLORS.slice(1);
-  const color=palette[Math.floor(Math.random()*palette.length)];
+  const color=_termNew ? null : palette[Math.floor(Math.random()*palette.length)];
   map.nodes[id]={id,text:'New topic',parent,
-    x:pn.x+(side==='left'?-180:180),y:pn.y+40,side, color, created:Date.now()};
+    x:pn.x+(side==='left'?-180:180),y:pn.y+40,side, created:Date.now()};
+  if(color) map.nodes[id].color=color;
   if(pn.collapsed) pn.collapsed=false;
   pushHistory();
   // Stable auto-layout tidies the tree (the new node is inserted in order and
@@ -4840,14 +4901,15 @@ function showLayoutConfigForm(){
 function showStyleConfigForm(){
   if(!map || READONLY) return;
   // Only the active style's knobs - same rule as the layout dialog.
-  const style = map.style || 'modern';
+  const style = resolvedMapStyle(map);
   const current = JSON.stringify(styleConfigFor(style, map.styleConfig), null, 2);
   const {m, dismissOn}=openVarForm(`
       <h2>Map style settings - ${escapeHtml((MAP_STYLES.find(s=>s.id===style)||{name:style}).name)}</h2>
       <div class="vf-hint">Saved with this map and included in share links.
         edgeColor is any CSS color ("" = the theme default); cardPad is a
         uniform card padding (0 = the style's own padding); glow adds a
-        colored glow to nodes; dash adds a dash pattern to edges.
+        colored glow to nodes; dash adds a dash pattern to edges;
+        tilt is the sketch style's per-card angle in degrees (0 = none).
         Out-of-range values are clamped and
         unknown keys ignored, so what you get back may differ from what you
         type.</div>
@@ -5734,6 +5796,7 @@ function positionNodeBar(){
       <button data-a="marker" class="${n.marker?'on':''}" title="${n.marker?'Change marker':'Add a marker'}">${escapeHtml(n.marker||'\u2B50')}</button>
       <button data-a="cite" class="${n.ref?'on':''}" title="Reference / citation">📖</button>
       <button data-a="image" class="${n.image?'on':''}" title="Attach image">🖼</button>
+      <button data-a="label" class="${n.label?'on':''}" title="Branch label (text above the connecting line)">🏷</button>
       ${!isRoot?'<button data-a="del" title="Delete (Del)">🗑</button>':''}
     </div>
     <div class="nb-div"></div>
@@ -5750,7 +5813,7 @@ function positionNodeBar(){
       <button data-a="highlight" class="fmt-btn color-btn" title="Highlight"><span class="A-mark" style="background:${escapeHtml(hl)};padding:0 2px;border-radius:2px">A</span><span class="caret">▾</span></button>
     </div>
     <div class="nb-div"></div>
-    <span class="swatches" title="Card color">${(isRoot?PALETTE:NODE_COLORS).map(c=>`<span class="sw" data-c="${c}" style="background:${c};${c==='#ffffff'?'border-color:var(--line)':''}"></span>`).join('')}</span>`;
+    <span class="swatches" title="Card color">${(isRoot?PALETTE:NODE_COLORS).map(c=>`<span class="sw" data-c="${c}" style="background:${c};${c==='#ffffff'?'border-color:var(--line)':''}"></span>`).join('')}<span class="sw sw-clear" data-c="" title="No card colour (prompt style)">∅</span></span>`;
   viewport.appendChild(bar);
   // Position after appending so we can measure the bar's real on-screen size
   // and clamp it to stay fully inside the visible canvas, however close to
@@ -5822,6 +5885,11 @@ function positionNodeBar(){
           else attachImageToNode(sel);
         } else attachImageToNode(sel);
       }
+      else if(a==='label'){
+        const cur=map.nodes[sel].label||'';
+        const val=prompt('Branch label (text above the connecting line):',cur);
+        if(val!==null){ map.nodes[sel].label=val.trim()||undefined; pushHistory(); render(); }
+      }
       else if(a==='size') showPicker(b,'size',fs,v=>{ map.nodes[sel].fontSize=v; pushHistory(); render(); });
       else if(a==='align') showPicker(b,'align',n.align||'center',v=>{ map.nodes[sel].align=v; pushHistory(); render(); });
       else if(a==='textColor') showPicker(b,'text',n.textColor,v=>{ map.nodes[sel].textColor=v; pushHistory(); render(); });
@@ -5830,7 +5898,16 @@ function positionNodeBar(){
   });
   bar.querySelectorAll('.sw').forEach(s=>s.onclick=(ev)=>{
     ev.stopPropagation();
-    if(isRoot) map.color=s.dataset.c; else map.nodes[sel].color=s.dataset.c;
+    const raw=s.dataset.c||'';
+    const clear=!raw || raw==='#fff' || raw==='#ffffff';
+    const val=clear ? null : raw;
+      if(isRoot){
+      map.color=val || (PALETTE[0] || '#e0613a');
+      // Terminal root card is empty by default; store the card colour on the root node itself
+      if(resolvedMapStyle(map)==='terminal') map.nodes[sel].color=val;
+    } else {
+      map.nodes[sel].color=val;
+    }
     pushHistory(); render();
   });
 }
@@ -8678,8 +8755,17 @@ function parseMarkdownOutline(text, filename){
     if(bullet){
       const indent = bullet[1].replace(/\t/g, '  ').length;
       let body = bullet[2].trim(), task = null;
-      const cb = body.match(/^\[([ xX])\]\s+(.*)$/);        // GitHub-style task checkbox
-      if(cb){ task = cb[1].toLowerCase()==='x' ? 'done' : 'todo'; body = cb[2].trim(); }
+      // GitHub-style task checkbox, plus the in-progress box. A node's task is a
+      // three-state field (todo / doing / done - see the nodebar button and the
+      // canvas glyphs), and markdown only standardises two of them, so `doing`
+      // uses [/], the spelling Obsidian's Tasks plugin popularised, and [-] is
+      // accepted as the other common spelling. Without this the editor read
+      // every doing box back as todo, and since applyMdToMap runs on each
+      // keystroke, one character typed anywhere silently reset them all.
+      const cb = body.match(/^\[([ xX\/-])\]\s+(.*)$/);
+      if(cb){ const mark = cb[1].toLowerCase();
+        task = mark==='x' ? 'done' : (mark==='/' || mark==='-') ? 'doing' : 'todo';
+        body = cb[2].trim(); }
       const bi = body.match(IMG_LINE);                        // a bullet that is only an image
       if(bi){ attachCur(n=>{ n.image = bi[2]; if(bi[1]) n.imageAlt = bi[1]; }); continue; }
       add(body, base() + 1 + Math.floor(indent/2), task);
@@ -9325,7 +9411,7 @@ function buildMarkdown(startId, opts){
       return childrenOf(id).map((c,i)=>walk(c, 0, path+'.'+i)).some(Boolean);       // heading's children start a fresh bullet indent
     } else {
       if(lineMap) lm[lines.length]=id;
-      const box = (rich && n.task) ? (n.task==='done' ? '[x] ' : '[ ] ') : '';
+      const box = (rich && n.task) ? (n.task==='done' ? '[x] ' : n.task==='doing' ? '[/] ' : '[ ] ') : '';
       const isPara = rich && n.para && !n.task;                 // keep plain paragraphs plain (no bullet)
       lines.push(isPara ? `${pad}${first}` : `${pad}- ${box}${first}`);
       const notePad = isPara ? pad : `${pad}  `;
@@ -9855,7 +9941,7 @@ async function exportPNG(){
   const zebraA = mixHex(themeNodeBg, accent, 0.07);
   const zebraB = mixHex(themeNodeBg, css('--teal') || '#2f6f6a', 0.07);
   const zd = withChildIndex(zebraDepth);   // depth parity for the tint choice
-  const mapStyle  = map.style  || 'modern';
+  const mapStyle  = resolvedMapStyle(map);
   const mapLayout = map.layout || 'balanced';
 
   const hidden=hiddenSet(); const ids=Object.keys(map.nodes).filter(i=>!hidden.has(i));
@@ -9878,24 +9964,85 @@ async function exportPNG(){
   if((document.documentElement.getAttribute('data-look')||'office')==='groot'){
     const _gu=await grootFaceUri(); if(_gu) grootImg=await loadImg(_gu);
   }
-  // A look may paint its texture as a mask on .stage::before (see alien and
-  // psycho). Read it off the live computed style rather than keeping a second
-  // copy of the SVG in here - one source, and the export cannot drift from the
-  // screen. Generic on purpose: any future masked look exports for free.
+  // A look may paint its texture as a mask on .stage::before (see psycho), or
+  // on its scenery layers (the three boat layers and .swell-layer for
+  // sailboat). Read either off the live
+  // computed style rather than keeping a second copy of the SVG in here - one
+  // source, and the export cannot drift from the screen. Generic on purpose:
+  // any future masked look exports for free.
+  // The URL is captured between double quotes because the fleet SVG's
+  // transform attributes contain parens, which a paren-bounded pattern
+  // truncates - and a truncated data URI loads as nothing. Single quotes are
+  // part of the payload (SVG attributes use them), so the capture must not
+  // exclude them; only " ends it. The unquoted branch is a fallback that
+  // cannot contain parens or quotes by definition.
+  const readMask = async cs => {
+    const mi=cs.maskImage||cs.webkitMaskImage||'';
+    const mm=mi.match(/url\((?:"(data:[^"]*?)"|(data:[^"'()]+))\)/);
+    if(!mm) return null;
+    const src=mm[1]||mm[2];
+    try{
+      const img=await loadImg(src); if(!img) return null;
+      const sz=(cs.maskSize||cs.webkitMaskSize||'').split(/\s+/);
+      return { img, tile:[parseFloat(sz[0])||img.width, parseFloat(sz[1])||parseFloat(sz[0])||img.height], tint:cs.backgroundColor };
+    }catch(e){ return null; }
+  };
   let maskImg=null, maskTile=null, maskTint=null;
   {
-    const cs=getComputedStyle(stage,'::before');
-    const mi=cs.maskImage||cs.webkitMaskImage||'';
-    const mm=mi.match(/url\(\"?(data:[^\")]+)\"?\)/);
-    if(mm){
-      try{
-        maskImg=await loadImg(mm[1]);
-        const sz=(cs.maskSize||cs.webkitMaskSize||'').split(/\s+/);
-        maskTile=[parseFloat(sz[0])||maskImg.width, parseFloat(sz[1])||parseFloat(sz[0])||maskImg.height];
-        maskTint=cs.backgroundColor;
-      }catch(e){ maskImg=null; }
-    }
+    const m=await readMask(getComputedStyle(stage,'::before'));
+    if(m){ maskImg=m.img; maskTile=m.tile; maskTint=m.tint; }
   }
+  // The sailboat's scenery is four layers _syncLookFx creates only while that
+  // look is on: .swell-layer (the wave lines) and three boat layers, one boat
+  // per wave line drifting at its own speed (.wave-layer near, .wave-layer-mid
+  // middle, .wave-layer-far far). A missing layer simply means less sea in the
+  // PNG. Each layer's transform is captured too: each drifts and bobs, and the
+  // PNG should place them where the screen actually has them, not at phase 0.
+  // The layout offset is read off the element rather than written as the
+  // layers' literal inset oversize (-200 for the swell, -400 for the boats),
+  // so retuning an inset cannot shift the export.
+  // Listed bottom-first - the order they paint in - so the boats land on top
+  // of the water in the PNG, exactly as the DOM has them.
+  const scenery=[];
+  for(const sel of ['.swell-layer','.wave-layer-far','.wave-layer-mid','.wave-layer']){
+    const el=document.querySelector(sel);
+    if(!el) continue;
+    const cs=getComputedStyle(el);
+    // prefers-reduced-motion hides the layers; the screen then shows no sea
+    // at all, and the PNG must not invent one.
+    if(cs.display==='none') continue;
+    const m=await readMask(cs);
+    if(!m) continue;
+    const tm=/matrix\(([^)]+)\)/.exec(cs.transform||'');
+    const p=tm ? tm[1].split(/\s*,\s*/) : [];
+    // Mask placement is part of the look and has to be read, not re-decided:
+    // the fleet hangs one non-repeating tile per layer off the bottom of its
+    // box, which is what gives it a bottom band, and the swell hangs off the
+    // same edge so the grids stay on one another. Both flags below drive where
+    // the PNG puts the tile, or the export tiles boats over the whole image and
+    // puts them a whole grid away from the water.
+    const rep=(cs.maskRepeat||cs.webkitMaskRepeat||'').trim();
+    const pos=(cs.maskPosition||cs.webkitMaskPosition||'').split(/\s+/);
+    scenery.push({ img:m.img, tile:m.tile, tint:m.tint,
+                   off:[el.offsetLeft||0, el.offsetTop||0],
+                   ph:[+p[4]||0, +p[5]||0],
+                   noY:rep.indexOf('repeat-x')===0,
+                   bottom:pos[1]==='bottom'||pos[1]==='100%' });
+  }
+  // Silhouette -> tint: the SVG is full-opacity black, and black on a themed
+  // canvas is wrong - it was invisible on dark paper. source-in keeps the
+  // shape and swaps in the layer's own background-color, which already
+  // carries the alpha CSS paints with.
+  const tintedTile=(img,tint,w,h)=>{
+    const off=document.createElement('canvas');
+    off.width=Math.max(1,Math.round(w)); off.height=Math.max(1,Math.round(h));
+    const octx=off.getContext('2d');
+    octx.drawImage(img,0,0,off.width,off.height);
+    octx.globalCompositeOperation='source-in';
+    octx.fillStyle=tint;
+    octx.fillRect(0,0,off.width,off.height);
+    return off;
+  };
 
   // Favicons for link nodes, so the export matches what the live canvas shows.
   // crossOrigin='anonymous' is the whole safety story here: favicons come from
@@ -9945,16 +10092,9 @@ async function exportPNG(){
   const tealColor = css('--teal') || '#2f6f6a';
   const accentColor = accent;
   const drawLookBg = ()=>{
-    // The masked texture first, tinted the way CSS tints it: the SVG is a
-    // silhouette, so drawing it raw would put black on a themed canvas.
+    // The masked texture first, tinted the way CSS tints it (tintedTile).
     if(maskImg && maskTile && maskTint){
-      const [tw,th]=maskTile;
-      const off=document.createElement('canvas'); off.width=Math.max(1,Math.round(tw)); off.height=Math.max(1,Math.round(th));
-      const octx=off.getContext('2d');
-      octx.drawImage(maskImg, 0, 0, off.width, off.height);
-      octx.globalCompositeOperation='source-in';
-      octx.fillStyle=maskTint; octx.fillRect(0,0,off.width,off.height);
-      const pat=ctx.createPattern(off,'repeat');
+      const pat=ctx.createPattern(tintedTile(maskImg,maskTint,maskTile[0],maskTile[1]),'repeat');
       if(pat){ ctx.fillStyle=pat; ctx.fillRect(0,0,W,H); }
     }
     if(look==='handwritten'){
@@ -9981,12 +10121,6 @@ async function exportPNG(){
       const spots=[[0.18,0.22,7,10],[0.68,0.18,5,7],[0.42,0.38,9,6],[0.82,0.52,6,8],[0.12,0.68,8,5],[0.55,0.78,5,9],[0.30,0.88,6,6]];
       spots.forEach(([rx,ry,rw,rh])=>{ ctx.beginPath(); ctx.ellipse(W*rx,H*ry,rw,rh,0,0,Math.PI*2); ctx.fill(); });
       ctx.globalAlpha=1;
-    } else if(look==='beach'){
-      ctx.strokeStyle=tealColor; ctx.globalAlpha=0.07; ctx.lineWidth=1;
-      for(let d=-H; d<W+H; d+=60){
-        ctx.beginPath(); ctx.moveTo(d,0); ctx.lineTo(d+H, H); ctx.stroke();
-      }
-      ctx.globalAlpha=1;
     } else if(look==='studio'){
       ctx.strokeStyle=css('--ink')||themeInk; ctx.globalAlpha=0.12; ctx.lineWidth=1;
       for(let d=-H; d<W+H; d+=31){
@@ -9995,9 +10129,9 @@ async function exportPNG(){
       }
       ctx.globalAlpha=1;
     } else if(look==='mountain'){
+      // horizontal stratified bands only - the vertical grid lines are gone
       ctx.strokeStyle=lineColor; ctx.globalAlpha=0.12; ctx.lineWidth=1;
       for(let y=60; y<H; y+=120){ ctx.beginPath(); ctx.moveTo(0,y+0.5); ctx.lineTo(W,y+0.5); ctx.stroke(); }
-      for(let x=80; x<W; x+=80){ ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,H); ctx.stroke(); }
       ctx.globalAlpha=1;    } else if(look==='desert'){
       // dunes - three large ellipses + coconut palms on curve + sand speck
       ctx.fillStyle=lineColor; ctx.globalAlpha=0.12;
@@ -10036,46 +10170,47 @@ async function exportPNG(){
       for(let dx=40; dx<W; dx+=64){ for(let dy=36; dy<H; dy+=64){ ctx.beginPath(); ctx.arc(dx,dy,0.8,0,Math.PI*2); ctx.fill(); }}
       ctx.globalAlpha=1; ctx.lineCap='round'; ctx.lineJoin='round';
     } else if(look==='sailboat'){
-      // wave lines - horizontal sine curves
-      ctx.strokeStyle=css('--teal')||'#2980b9'; ctx.globalAlpha=0.06; ctx.lineWidth=1.5; ctx.lineCap='round';
-      for(let wave=0;wave<4;wave++){
-        const baseY=40+wave*40;
-        ctx.beginPath();
-        for(let x=0;x<=W;x+=4){
-          const y=baseY+Math.sin((x+wave*20)*0.026)*10;
-          x===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+      // All four layers drift and bob on screen. The swell tiles from its own
+      // layout origin (the -200/-8 oversize, read from offsetLeft/offsetTop);
+      // a bottom-anchored layer hangs its tile off the BOTTOM edge of the box
+      // instead, and here the box is the PNG, so the frame's bottom edge stands
+      // in for the layer's. All are placed at the transform the screen is
+      // currently showing, so a mid-drift export matches a mid-drift canvas -
+      // water first, then near, middle and far on top of it, the order the DOM
+      // paints them. Reading the live masks keeps this in step with any retune
+      // of --swell-mask or the --wave-mask set; no layers means no sea, which
+      // is honest.
+      scenery.forEach(l=>{
+        const tx=l.off[0]+l.ph[0];
+        // A bottom-anchored mask hangs its tile off the BOTTOM of whatever box
+        // it is given: on screen that box is the layer, here it is the PNG, so
+        // the frame's bottom edge stands in for it. Layers that hang off the
+        // top keep using their layout offset, exactly as before.
+        const ty=(l.bottom ? H-l.tile[1] : l.off[1])+l.ph[1];
+        ctx.save();
+        ctx.translate(tx,ty);
+        const pat=ctx.createPattern(tintedTile(l.img,l.tint,l.tile[0],l.tile[1]),'repeat');
+        // -tx,-ty is the canvas's top-left corner in the layer's own
+        // coordinates, so this rect covers the PNG exactly; the pattern
+        // itself repeats without limit in every direction. The one exception
+        // is a layer whose mask does not repeat upward: that paints exactly
+        // one band of tile height, which is how the fleet stays a bottom band
+        // in the PNG instead of spreading boats over the whole image.
+        if(pat){
+          ctx.fillStyle=pat;
+          if(l.noY) ctx.fillRect(-tx,0,W,l.tile[1]);
+          else      ctx.fillRect(-tx,-ty,W,H);
         }
-        ctx.stroke();
-      }
-      ctx.globalAlpha=1; ctx.lineCap='round'; ctx.lineJoin='round';
+        ctx.restore();
+      });
     } else if(look==='mathematician'){
-      // math doodles - grid lines + scattered math symbols
-      const inkCol = css('--ink') || themeInk;
+      // Only the 24px grid here. The doodles live in --look-mask and reach the
+      // export through the .stage::before read above (maskImg), so the screen
+      // and the PNG paint the same artwork from one source and cannot drift.
       ctx.strokeStyle=lineColor; ctx.lineWidth=1; ctx.globalAlpha=0.12;
       for(let x=0;x<=W;x+=24){ ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,H); ctx.stroke(); }
       for(let y=0;y<=H;y+=24){ ctx.beginPath(); ctx.moveTo(0,y+0.5); ctx.lineTo(W,y+0.5); ctx.stroke(); }
-      ctx.globalAlpha=0.08; ctx.font='14px serif'; ctx.fillStyle=inkCol;
-      // scattered math symbols
-      const symbols=['pi','theta','Sigma','integral','sqrt','alpha','beta','delta','infinity','dx','dy'];
-      const positions=[[60,60],[180,80],[300,60],[420,70],[70,180],[200,200],[380,180],[60,320],[220,340],[380,320],[140,420],[320,400],[420,440]];
-      positions.forEach(([x,y],i)=>{
-        if(x<W && y<H){
-          ctx.fillText(symbols[i%symbols.length], x, y);
-        }
-      });
-      // right triangle
-      ctx.strokeStyle=inkCol; ctx.globalAlpha=0.10; ctx.lineWidth=1.2;
-      ctx.beginPath(); ctx.moveTo(60,110); ctx.lineTo(100,60); ctx.lineTo(60,60); ctx.closePath(); ctx.stroke();
-      // circle
-      ctx.beginPath(); ctx.arc(200,160,28,0,Math.PI*2); ctx.stroke();
-      // sin wave
-      ctx.beginPath();
-      for(let x=300;x<=360;x+=2){
-        const y=120+Math.sin((x-300)*0.1)*20;
-        x===300?ctx.moveTo(x,y):ctx.lineTo(x,y);
-      }
-      ctx.stroke();
-      ctx.globalAlpha=1; ctx.lineCap='round'; ctx.lineJoin='round';
+      ctx.globalAlpha=1;
     } else if(look==='architect'){
       // blueprint: minor 8px grid, major 32px over it, 45-degree construction
       // haze, the title-block rules down the left and top, and two ghost
@@ -10111,19 +10246,6 @@ async function exportPNG(){
       ctx.fillStyle=accentColor; ctx.globalAlpha=0.18;
       for(let x=26;x<W;x+=52) for(let y=26;y<H;y+=52){ ctx.beginPath(); ctx.arc(x,y,1.2,0,Math.PI*2); ctx.fill(); }
       ctx.globalAlpha=1;
-    } else if(look==='alien'){
-      // starfield, the saucer's beam wash and the crop-circle grid. The
-      // creatures themselves come from the mask drawn above.
-      ctx.fillStyle=css('--ink')||themeInk;
-      [[0.18,0.22,1.4,0.88],[0.73,0.18,1.2,0.74],[0.42,0.38,1,0.62],[0.85,0.52,1.2,0.78],[0.28,0.68,1,0.58]]
-        .forEach(([rx,ry,r,a])=>{ ctx.globalAlpha=a*0.5; ctx.beginPath(); ctx.arc(W*rx,H*ry,r,0,Math.PI*2); ctx.fill(); });
-      const beam=ctx.createRadialGradient(W*0.5,H*0.07,0,W*0.5,H*0.07,Math.max(W,H)*0.5);
-      beam.addColorStop(0, accentColor); beam.addColorStop(1,'transparent');
-      ctx.globalAlpha=0.06; ctx.fillStyle=beam; ctx.fillRect(0,0,W,H);
-      ctx.strokeStyle=lineColor; ctx.globalAlpha=0.16; ctx.lineWidth=1;
-      for(let x=0;x<=W;x+=38){ ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,H); ctx.stroke(); }
-      for(let y=0;y<=H;y+=38){ ctx.beginPath(); ctx.moveTo(0,y+0.5); ctx.lineTo(W,y+0.5); ctx.stroke(); }
-      ctx.globalAlpha=1;
     } else if(look==='psycho'){
       // VHS tracking lines and the vertical hold, over the masked spatter.
       ctx.strokeStyle=accentColor; ctx.globalAlpha=0.05; ctx.lineWidth=1;
@@ -10131,6 +10253,44 @@ async function exportPNG(){
       ctx.strokeStyle=lineColor; ctx.globalAlpha=0.10;
       for(let x=0;x<=W;x+=40){ ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,H); ctx.stroke(); }
       ctx.globalAlpha=1;
+    } else if(look==='matrix'){
+      // Digital rain - katakana/hex columns with bright heads, plus faint scanlines
+      ctx.strokeStyle=lineColor; ctx.globalAlpha=0.04; ctx.lineWidth=1;
+      for(let y=0;y<H;y+=4){ ctx.beginPath(); ctx.moveTo(0,y+0.5); ctx.lineTo(W,y+0.5); ctx.stroke(); }
+      ctx.globalAlpha=1;
+      const chars='ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏﾐｶｷﾑﾕﾗｾﾈｽﾀﾇﾍｦｧｨｩｪｫｬｭｮｯｰ0123456789ABCDEF';
+      const cols=Math.floor(W/18);
+      ctx.font='12px "Courier New",monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      for(let c=0;c<cols;c++){
+        const x=(c+0.5)*18 + (Math.random()*6-3);
+        const len=8+Math.floor(Math.random()*12);
+        const startY=-40 + Math.random()*H*0.6;
+        for(let i=0;i<len;i++){
+          const y=startY + i*14;
+          if(y<0||y>H) continue;
+          const ch=chars[Math.floor(Math.random()*chars.length)];
+          const isHead=i===len-1;
+          ctx.globalAlpha=isHead?0.92:0.14 + (i/len)*0.18;
+          ctx.fillStyle=isHead ? '#eaffea' : accentColor;
+          if(isHead){ ctx.shadowColor=accentColor; ctx.shadowBlur=8; } else ctx.shadowBlur=0;
+          ctx.fillText(ch, x, y);
+          ctx.shadowBlur=0;
+        }
+      }
+      ctx.globalAlpha=0.07; ctx.font='10px "Courier New",monospace';
+      for(let c=0;c<Math.floor(cols*0.6);c++){
+        const x=(c+0.7)*28 + Math.random()*10;
+        const len=6+Math.floor(Math.random()*8);
+        const startY=Math.random()*H;
+        for(let i=0;i<len;i++){
+          const y=startY + i*13;
+          if(y<0||y>H) continue;
+          const ch=chars[Math.floor(Math.random()*chars.length)];
+          ctx.fillStyle=accentColor; ctx.globalAlpha=0.06 + (i/len)*0.05;
+          ctx.fillText(ch, x, y);
+        }
+      }
+      ctx.globalAlpha=1; ctx.textAlign='start'; ctx.textBaseline='alphabetic'; ctx.shadowBlur=0;
     } else {
       // office / default - dot grid
       if(canvasDot){
@@ -10226,7 +10386,7 @@ async function exportPNG(){
     let col = (_sc && _sc.edgeColor) ? _sc.edgeColor : null;
     let wid = _sc ? _sc.edgeWidth : null;
     if(col==null){
-      if(mapStyle==='bubble' || mapStyle==='neon' || mapStyle==='circuit') col=accent;
+      if(mapStyle==='bubble' || mapStyle==='neon' || mapStyle==='circuit' || mapStyle==='terminal') col=accent;
       else if(mapStyle==='sketch' || mapStyle==='ink') col=themeInk;
       else col=themeEdge;
     }
@@ -10235,9 +10395,10 @@ async function exportPNG(){
       else if(mapStyle==='sketch') wid=1.6;
       else if(mapStyle==='classic') wid=1.6;
       else if(mapStyle==='minimal') wid=1.1;
-      else if(mapStyle==='neon') wid=2.4;
+      else if(mapStyle==='neon') wid=1.5;
       else if(mapStyle==='ink') wid=2.6;
       else if(mapStyle==='clay') wid=1.6;
+      else if(mapStyle==='terminal') wid=1.6;
       else wid=2.2;
     }
     let dash = null;
@@ -10308,10 +10469,45 @@ async function exportPNG(){
     ctx.restore();
   }
 
+  // Branch labels - text above branch lines for nodes with a `label` property
+  if(mapLayout!=='radial' && mapLayout!=='grid' && mapLayout!=='matrix'){
+    ctx.save();
+    ctx.font = '500 11px var(--sans)';
+    ctx.fillStyle = css('--ink-soft') || '#636e72';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ids.forEach(i=>{
+      const n=map.nodes[i]; if(!n.label || hidden.has(i)) return;
+      const p=map.nodes[n.parent]; if(!p || hidden.has(n.parent)) return;
+      const leftSide=(n.side==='left');
+      let x1,y1,x2,y2,horizontal=true;
+      if(mapLayout==='down'){
+        horizontal=false;
+        x1=p.x+(p.w||0)/2; y1=p.y+(p.h||0);
+        x2=n.x+(n.w||0)/2; y2=n.y;
+      } else if(mapLayout==='up'){
+        horizontal=false;
+        x1=p.x+(p.w||0)/2; y1=p.y;
+        x2=n.x+(n.w||0)/2; y2=n.y+(n.h||0);
+      } else {
+        x1=leftSide ? p.x : p.x+(p.w||0);
+        y1=p.y+(p.h||0)/2;
+        x2=leftSide ? n.x+(n.w||0) : n.x;
+        y2=n.y+(n.h||0)/2;
+      }
+      const mx=(x1+x2)/2, my=(y1+y2)/2;
+      const offY=horizontal ? -10 : 0;
+      const offX=horizontal ? 0 : -10;
+      ctx.fillText(n.label, mx+offX, my+offY);
+    });
+    ctx.restore();
+  }
+
   // Nodes - radius per style, respecting styleConfig like live CSS (modern 12, classic 4/6 root, bubble 50, sketch 3, dashed 14, minimal 6/8 root, zigzag 2, neon 10)
   const _styleCfg = (typeof STYLE_CONFIG_DEFAULTS!=='undefined' && STYLE_CONFIG_DEFAULTS[mapStyle])
     ? { ...STYLE_CONFIG_DEFAULTS[mapStyle], ...((map.styleConfig||{})[mapStyle]||{}) } : null;
   const _baseRadius = _styleCfg ? _styleCfg.radius : (mapStyle==='bubble'?50: mapStyle==='classic'?4: mapStyle==='sketch'?3: mapStyle==='dashed'?14: mapStyle==='minimal'?6: mapStyle==='zigzag'?2: mapStyle==='neon'?10:12);
+  const _tiltAmp = mapStyle==='sketch' ? sketchTiltAmp() : 0;
   // Indexed like the zebraDepth call above: computeRollups walks the tree with
   // childrenOf, which is O(n) per call without an index, so this was quadratic and
   // cost 874 ms of a 2000 node export on its own.
@@ -10332,7 +10528,7 @@ async function exportPNG(){
     const n=map.nodes[i]; const isRoot=(i===map.rootId);
     const w=n.w||120, h=n.h||40;
     const baseR = _baseRadius;
-    const radius = isRoot ? (mapStyle==='classic' ? 6 : mapStyle==='minimal' ? 8 : baseR) : baseR;
+    let radius = isRoot ? (mapStyle==='classic' ? 6 : mapStyle==='minimal' ? 8 : baseR) : baseR;
     const r = Math.min(radius, h/2);
     // Detect formula early for border/badges/text
     let _isFormula=false, _formulaVal=null;
@@ -10343,8 +10539,20 @@ async function exportPNG(){
         _formulaVal = (typeof computeNodeValue==='function' ? computeNodeValue(i) : null);
       }
     }catch(e){}
+    // Sketch tilt: the same per-card angle as the live CSS rotate(var(--tilt)),
+    // around the card centre so border, text and badges lean together.
+    const _tilt = _tiltAmp ? sketchTiltDeg(i, _tiltAmp) : 0;
+    if(_tilt){
+      ctx.save();
+      ctx.translate(n.x+w/2, n.y+h/2);
+      ctx.rotate(_tilt*Math.PI/180);
+      ctx.translate(-(n.x+w/2), -(n.y+h/2));
+    }
     roundRect(ctx, n.x, n.y, w, h, r);
-    if(isRoot){
+    if(mapStyle==='terminal'){
+      const _mc=n.color;
+      ctx.fillStyle=(_mc && _mc!=='#fff' && _mc!=='#ffffff') ? _mc : 'transparent';
+    } else if(isRoot){
       const _hex = map.color || accent;
       if(mapStyle==='ink'){
         ctx.fillStyle = _hex;
@@ -10369,7 +10577,18 @@ async function exportPNG(){
       if((mapStyle==='modern' || mapStyle==='dashed') && isRoot) return false;
       return true;
     })();
-    if(shouldStroke){
+    if(mapStyle==='terminal'){
+      // Terminal: no card box, just an accent underline (matches CSS border-bottom)
+      const _uw = isRoot ? 2.5 : 2;
+      ctx.save();
+      ctx.strokeStyle=accent;
+      ctx.lineWidth=_uw;
+      ctx.beginPath();
+      ctx.moveTo(n.x, n.y+h-_uw/2);
+      ctx.lineTo(n.x+w, n.y+h-_uw/2);
+      ctx.stroke();
+      ctx.restore();
+    } else if(shouldStroke){
       const _glow = _styleCfg ? _styleCfg.glow : 0;
       if(mapStyle==='minimal'){ ctx.strokeStyle=themeLine; ctx.lineWidth=1; }
       else if(mapStyle==='neon'){ ctx.strokeStyle=accent; ctx.lineWidth=1.2; ctx.shadowColor=accent; ctx.shadowBlur=_glow||10; }
@@ -10391,6 +10610,25 @@ async function exportPNG(){
     if(_isFormula && _formulaVal && _formulaVal.error){
       ctx.strokeStyle='#e5484d'; ctx.lineWidth=1.5; ctx.stroke();
     }
+    if(mapStyle==='paper'){
+      if(!isRoot && !(n.color && n.color!=='#fff' && n.color!=='#ffffff')){
+        // Legal pad furniture matching #viewport[data-style="paper"] .node:
+        // rule lines every 23px, accent margin at x+16.75, punch holes at x+7.
+        // Root and explicitly coloured cards paint their background inline, which
+        // clears the CSS layers - they get none of this live, so neither here.
+        // Feature coords are relative to the CSS padding box, hence the +1 border.
+        ctx.save();
+        roundRect(ctx, n.x, n.y, w, h, r);
+        ctx.clip();
+        ctx.strokeStyle=themeLine; ctx.globalAlpha=0.22; ctx.lineWidth=1;
+        for(let yy=n.y+23.5; yy<n.y+h; yy+=23){ ctx.beginPath(); ctx.moveTo(n.x, yy); ctx.lineTo(n.x+w, yy); ctx.stroke(); }
+        ctx.globalAlpha=0.65; ctx.strokeStyle=accent; ctx.lineWidth=1.5;
+        ctx.beginPath(); ctx.moveTo(n.x+16.75, n.y+1); ctx.lineTo(n.x+16.75, n.y+h-1); ctx.stroke();
+        ctx.globalAlpha=0.16; ctx.fillStyle=themeInk;
+        for(const _t of [0.25, 0.5, 0.75]){ ctx.beginPath(); ctx.arc(n.x+7, n.y+1+(h-2)*_t, 3, 0, Math.PI*2); ctx.fill(); }
+        ctx.restore();
+      }
+    }
     // Reference node - distinct left border + italic, like live .node.ref-node
     if(n.ref){
       ctx.save();
@@ -10405,8 +10643,20 @@ async function exportPNG(){
     // matching the live look - --sans/--serif + handwritten scale + lookConfig nodeSize
     const _hasColor2 = n.color && n.color!=='#fff' && n.color!=='#ffffff';
     const _zebraBg = zd[i] && zd[i]%2===1 ? zebraA : (zd[i] ? zebraB : themeNodeBg);
-    const bg = isRoot ? (map.color || accent) : (_hasColor2 ? n.color : _zebraBg);
-    const textFill = n.textColor || (isRoot ? pickContrast(bg) : (_hasColor2 ? pickContrast(n.color) : themeInk));
+    let bg, textFill;
+    if(mapStyle==='terminal'){
+      const _mc=n.color;
+      if(_mc && _mc!=='#fff' && _mc!=='#ffffff'){
+        bg=_mc;
+        textFill=n.textColor || pickContrast(_mc);
+      } else {
+        bg='transparent';
+        textFill=n.textColor || themeInk;
+      }
+    } else {
+      bg = isRoot ? (map.color || accent) : (_hasColor2 ? n.color : _zebraBg);
+      textFill = n.textColor || (isRoot ? pickContrast(bg) : (_hasColor2 ? pickContrast(n.color) : themeInk));
+    }
     const sans = css('--sans') || '"Bricolage Grotesque",system-ui,sans-serif';
     const serif = css('--serif') || sans;
     let fontPx = n.fontSize || (isRoot ? 19 : 15);
@@ -10415,9 +10665,21 @@ async function exportPNG(){
     if(!n.fontSize) fontPx = Math.round(fontPx * lookScale);
     const fontFamily = isRoot ? serif : sans;
     ctx.textBaseline='middle';
+    // Terminal cursor prefix - draw after fontPx is known (matches CSS ::before)
+    if(mapStyle==='terminal'){
+      ctx.save();
+      ctx.fillStyle=accent;
+      ctx.font=`bold ${fontPx}px monospace`;
+      ctx.textAlign='left';
+      ctx.textBaseline='middle';
+      ctx.fillText(isRoot?'▌':'>', n.x+6, n.y+h/2);
+      ctx.restore();
+    }
     // Padding per style: use styleConfig cardPad if set, else per-style defaults
     const _cp = _styleCfg ? _styleCfg.cardPad : 0;
     const insetX = (() => {
+      if(mapStyle==='terminal') return isRoot ? 20 : 16;   // leave room for the > / ▌ cursor prefix
+      if(mapStyle==='paper') return Math.max(18, _cp || 15);   // clears the punch-hole strip and margin rule
       if(_cp > 0) return isRoot ? _cp + 12 : _cp;
       if(mapStyle==='bubble') return isRoot ? 26 : 22;
       return isRoot ? 22 : 15;
@@ -10516,13 +10778,13 @@ async function exportPNG(){
       const _f = (_isTaskDone||!!n.strike ? 'line-through ' : '') + (n.underline?'underline ':'') + ((!!n.bold||isRoot)?'bold ':'500 ') + (n.italic||!!n.ref?'italic ':'') + fontPx+'px '+fontFamily;
       // Simple center/align draw for formula result (single line)
       ctx.font=((!!n.bold||isRoot)?'bold ':'500 ') + (n.italic||!!n.ref?'italic ':'') + fontPx+'px '+fontFamily;
-      ctx.textAlign = n.align==='left' ? 'left' : n.align==='right' ? 'right' : 'center';
-      const _fx = n.align==='left' ? textX : n.align==='right' ? textX+textMaxWidth : textX+textMaxWidth/2;
+      ctx.textAlign = mapStyle==='terminal' ? 'left' : (n.align==='left' ? 'left' : n.align==='right' ? 'right' : 'center');
+      const _fx = (mapStyle==='terminal' || n.align==='left') ? textX : n.align==='right' ? textX+textMaxWidth : textX+textMaxWidth/2;
       // Draw with strike-through if needed
       ctx.fillText(_txt, _fx, textCenterY);
       if(n.underline || _isTaskDone || n.strike){
         const _w = ctx.measureText(_txt).width;
-        const _x0 = n.align==='left' ? _fx : n.align==='right' ? _fx-_w : _fx-_w/2;
+        const _x0 = (mapStyle==='terminal' || n.align==='left') ? _fx : n.align==='right' ? _fx-_w : _fx-_w/2;
         ctx.strokeStyle=_col; ctx.lineWidth=Math.max(1,fontPx/15); ctx.beginPath();
         const _ly = _isTaskDone||n.strike ? (textCenterY - fontPx*0.18) : (textCenterY + fontPx*0.38);
         ctx.moveTo(_x0, _ly); ctx.lineTo(_x0+_w, _ly); ctx.stroke();
@@ -10541,7 +10803,7 @@ async function exportPNG(){
         drawNodeMath(ctx, htmlForExport, {
           x: textX, y: textCenterY, maxWidth: textMaxWidth,
           fontPx, color: textFill, family: fontFamily,
-          bold: !!n.bold || isRoot, align: n.align || 'center', listType: n.listType || null
+          bold: !!n.bold || isRoot, align: n.align || (mapStyle==='terminal' ? 'left' : 'center'), listType: n.listType || null
         });
       } else {
         drawFormattedText(ctx, htmlForExport, {
@@ -10556,7 +10818,7 @@ async function exportPNG(){
       baseItalic: !!n.italic || !!n.ref,
       baseUnderline: !!n.underline,
       baseStrike: !!n.strike || _isTaskDone,
-      align: n.align || 'center',
+      align: n.align || (mapStyle==='terminal' ? 'left' : 'center'),
       listType: n.listType || null
     });
       }
@@ -10604,6 +10866,7 @@ async function exportPNG(){
       ctx.fillStyle=themeInk; ctx.fillText('📖', cx, cy);
       ctx.textAlign='start';
     }
+    if(_tilt) ctx.restore();
   });
 
   try{
@@ -10808,6 +11071,21 @@ function pickContrast(hex){
   // luminance roughly per WCAG
   const L = (0.299*r + 0.587*g + 0.114*b) / 255;
   return L > 0.6 ? '#23201b' : '#ffffff';
+}
+// Black or white, whichever actually wins the WCAG ratio on `hex`.
+// pickContrast() above answers the same question for the node palette, but it
+// switches on perceived luminance at a fixed 0.6 threshold, which is tuned for
+// those pastels and mis-calls saturated brand colours: on Ko-fi's coral it
+// picks white at 2.998:1 when black reads at 7:1. The donate icons are painted
+// on colours we do not choose, so they measure instead of estimating.
+function inkOn(hex){
+  const h = (hex||'').replace('#','');
+  if(h.length < 6) return '#000000';
+  const chan = i => { const v = parseInt(h.slice(i,i+2),16)/255;
+    return v <= 0.04045 ? v/12.92 : ((v+0.055)/1.055)**2.4; };
+  const L = 0.2126*chan(0) + 0.7152*chan(2) + 0.0722*chan(4);
+  // (1.05)/(L+0.05) for white, (L+0.05)/0.05 for black
+  return (1.05/(L+0.05)) >= ((L+0.05)/0.05) ? '#ffffff' : '#000000';
 }
 function roundRect(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 function wrapText(ctx,text,x,y,maxW,lh){const words=text.split(/\s+/);let line='',lines=[];words.forEach(w=>{const t=line?line+' '+w:w;if(ctx.measureText(t).width>maxW&&line){lines.push(line);line=w;}else line=t;});if(line)lines.push(line);const startY=y-(lines.length-1)*lh/2;lines.forEach((l,i)=>ctx.fillText(l,x,startY+i*lh));}
@@ -11586,7 +11864,8 @@ const THEMES = [
   {id:'frosted-pine',     name:'Frosted<br>Pine',  swatch:['#0c1610','#122018','#34d399']},
   {id:'quantum-violet',   name:'Quantum<br>Violet', swatch:['#0e0a18','#18122a','#8b5cf6']},
   {id:'copper-rust',      name:'Copper<br>Rust',   swatch:['#16120e','#241a12','#ea580c']},
-  {id:'lunar-silver',     name:'Lunar<br>Silver',  swatch:['#0e1014','#181c22','#94a3b8']}
+  {id:'lunar-silver',     name:'Lunar<br>Silver',  swatch:['#0e1014','#181c22','#94a3b8']},
+  {id:'xmind-light',     name:'XMind<br>Light',  swatch:['#f5f5f5','#ffffff','#e86839']}
 ];
 // Shown in their own dedicated panel section, not mixed into the regular
 // colour-theme grid above. Deliberately a different kind of thing from
@@ -11604,7 +11883,6 @@ const LOOKS = [
   {id:'lab',         name:'in the<br>Lab',     font:'"JetBrains Mono",monospace'},
   {id:'scientist',   name:'the<br>Scientist',  font:'"Space Mono",monospace'},
   {id:'architect',   name:'the<br>Architect',  font:'"Space Grotesk",sans-serif'},
-  {id:'alien',       name:'an<br>Alien',       font:'"Space Mono",monospace'},
   {id:'psycho',      name:'a<br>Psycho',       font:'"Oswald",system-ui,sans-serif'},
   {id:'forest',      name:'in the<br>Forest',   font:'"Fredoka",system-ui,sans-serif'},
   {id:'beach',       name:'at the<br>Beach',    font:'"Oswald",system-ui,sans-serif'},
@@ -11613,7 +11891,8 @@ const LOOKS = [
   {id:'desert',      name:'in the<br>Desert',     font:'"Nunito",system-ui,sans-serif'},
   {id:'groot',       name:'Groot',         font:'"Fredoka",system-ui,sans-serif'},
   {id:'sailboat',    name:'on a<br>Sailboat',     font:'"Quicksand",sans-serif'},
-  {id:'mathematician', name:'a<br>Math Expert', font:'"Cambria Math",serif'},
+  {id:'mathematician', name:'a Math<br>Expert', font:'"Cambria",Cambria,"Cambria Math",Georgia,serif'},
+  {id:'matrix',       name:'in the<br>Matrix',     font:'"Courier New",monospace'},
 ];
 const MAP_STYLES = [
   {id:'modern',  name:'Modern',  desc:'Soft cards, curved branches'},
@@ -11628,7 +11907,8 @@ const MAP_STYLES = [
   {id:'blueprint', name:'Blueprint', desc:'Transparent wireframes, double-line drafts'},
   {id:'clay', name:'Clay', desc:'Inflated clay, soft inset shadows'},
   {id:'ink', name:'Ink', desc:'Bold comic, heavy ink borders, hard shadow'},
-  {id:'paper', name:'Paper', desc:'Ruled paper with soft stack shadow'}
+  {id:'paper', name:'Paper', desc:'Legal pad, margin rule and punch holes'},
+  {id:'terminal', name:'Terminal', desc:'Prompt-style cards, accent underlines'}
 ];
 // Per-style tunables, keyed by style id on the map as map.styleConfig - the
 // same pattern as layoutConfig. Defaults mirror what the CSS and the export
@@ -11637,20 +11917,29 @@ const STYLE_CONFIG_DEFAULTS = {
   modern:  { edgeWidth:2.2, edgeColor:'', radius:12,  cardPad:0,  glow:0,  dash:0 },
   classic: { edgeWidth:1.6, edgeColor:'', radius:4,   cardPad:0,  glow:0,  dash:0 },
   bubble:  { edgeWidth:2,   edgeColor:'', radius:50, cardPad:10, glow:0,  dash:0 },
-  sketch:  { edgeWidth:1.6, edgeColor:'', radius:3,   cardPad:0,  glow:0,  dash:0 },
+  sketch:  { edgeWidth:1.6, edgeColor:'', radius:3,   cardPad:0,  glow:0,  dash:0,  tilt:2 },
   dashed:  { edgeWidth:2.2, edgeColor:'', radius:14,  cardPad:0,  glow:0,  dash:7 },
   minimal: { edgeWidth:1.1, edgeColor:'', radius:6,   cardPad:0,  glow:0,  dash:0 },
   zigzag:  { edgeWidth:2,   edgeColor:'', radius:2,   cardPad:0,  glow:0,  dash:0 },
-  neon:    { edgeWidth:2.4, edgeColor:'', radius:10,  cardPad:0,  glow:16, dash:0 },
+  neon:    { edgeWidth:1.5, edgeColor:'', radius:10,  cardPad:0,  glow:6,  dash:0 },
   circuit: { edgeWidth:1.4, edgeColor:'', radius:4,   cardPad:2,  glow:8,  dash:3 },
   blueprint:{ edgeWidth:1.2, edgeColor:'', radius:11,  cardPad:0,  glow:0,  dash:6 },
   clay:    { edgeWidth:1.6, edgeColor:'', radius:16,  cardPad:6,  glow:12, dash:0 },
   ink:     { edgeWidth:2.6, edgeColor:'', radius:8,   cardPad:0,  glow:0,  dash:0 },
   paper:   { edgeWidth:1.5, edgeColor:'', radius:6,   cardPad:4,  glow:0,  dash:0 },
+  terminal:{ edgeWidth:1.6, edgeColor:'', radius:0,   cardPad:0,  glow:0,  dash:0 },
 };
 const STYLE_CONFIG_BOUNDS = {
-  edgeWidth:[1,8], edgeColor:[0,40], radius:[0,999], cardPad:[0,80], glow:[0,80], dash:[0,60],
+  edgeWidth:[1,8], edgeColor:[0,40], radius:[0,999], cardPad:[0,80], glow:[0,80], dash:[0,60], tilt:[0,5],
 };
+// Maps saved under a retired style id (xmind, elixir) still open: fall back to
+// modern rather than rendering with no [data-style] rules and no style config.
+// STYLE_CONFIG_DEFAULTS is the source of truth because applyStyleConfigVars
+// spreads it - an unknown key there would write undefined CSS variables.
+function resolvedMapStyle(m){
+  const s = (m && m.style) || 'modern';
+  return Object.prototype.hasOwnProperty.call(STYLE_CONFIG_DEFAULTS, s) ? s : 'modern';
+}
 // Repairs rather than rejects, like validateLayoutConfig: numbers are clamped
 // to their bounds, edgeColor is kept as a short string ('' = theme default),
 // unknown keys and unknown styles are dropped, and every style gets its
@@ -11667,7 +11956,7 @@ function validateStyleConfig(raw){
     if(typeof sec.edgeColor === 'string' && sec.edgeColor.trim()){
       out[style].edgeColor = sec.edgeColor.trim().slice(0, STYLE_CONFIG_BOUNDS.edgeColor[1]);
     }
-    for(const key of ['edgeWidth','radius','cardPad','glow','dash']){
+    for(const key of ['edgeWidth','radius','cardPad','glow','dash','tilt']){
       const v = sec[key];
       if(typeof v !== 'number' || !isFinite(v)) continue;
       const [lo,hi] = STYLE_CONFIG_BOUNDS[key];
@@ -11681,6 +11970,32 @@ function styleConfigFor(style, raw){
   const all = validateStyleConfig(raw);
   return all[style] ? { [style]: all[style] } : {};
 }
+// Sketch's per-card tilt amplitude in degrees: the saved styleConfig when it
+// is a usable number, else the style default (2). A saved 0 is honoured as
+// "off" - it must not fall back to the default, or the knob could never be
+// turned down. Shared by render() and exportPNG() so the PNG leans exactly
+// like the screen.
+function sketchTiltAmp(){
+  const sec = (map && map.styleConfig && map.styleConfig.sketch) || null;
+  const v = sec && sec.tilt;
+  return (typeof v === 'number' && isFinite(v)) ? v : STYLE_CONFIG_DEFAULTS.sketch.tilt;
+}
+// Deterministic per-card tilt: a stable FNV-1a hash of the node id mapped to
+// ±amp degrees. Same id, same angle - across re-renders, reloads, and PNG
+// exports (which call this with the same id), so a card never re-leans while
+// you watch and never disagrees with its exported twin. Pure: the amplitude
+// comes from the caller (sketchTiltAmp), so tests can drive it directly.
+function sketchTiltDeg(id, amp){
+  const a = Math.min(5, Math.max(0, Number(amp) || 0));
+  if(!a) return 0;
+  let h = 2166136261;
+  const s = String(id);
+  for(let i = 0; i < s.length; i++){
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return ((h >>> 0) % 401 - 200) / 200 * a;
+}
 // Push the active style's config onto #viewport as inline custom properties,
 // which override the per-style CSS rules (inline beats attribute selectors).
 // Called on every render so load, style switches and theme changes all agree.
@@ -11691,7 +12006,7 @@ function styleConfigFor(style, raw){
 function applyStyleConfigVars(){
   const vp = viewport;
   if(!vp) return;
-  const style = (map && map.style) || 'modern';
+  const style = resolvedMapStyle(map);
   const cfg = { ...STYLE_CONFIG_DEFAULTS[style], ...(((map && map.styleConfig) || {})[style] || {}) };
   vp.style.setProperty('--edge-width', cfg.edgeWidth);
   vp.style.setProperty('--edge-color', cfg.edgeColor || null);
@@ -11717,7 +12032,6 @@ const LOOK_CONFIG_DEFAULTS = {
   lab:          { font:'"JetBrains Mono",monospace',                 nodeSize:1, radius:4  },
   scientist:    { font:'"Space Mono",monospace',                     nodeSize:1, radius:4  },
   architect:    { font:'"Space Grotesk",sans-serif',                 nodeSize:1, radius:6  },
-  alien:        { font:'"Space Mono",monospace',                     nodeSize:1, radius:12 },
   psycho:       { font:'"Oswald",system-ui,sans-serif',              nodeSize:1, radius:4  },
   forest:       { font:'"Fredoka",system-ui,sans-serif',             nodeSize:1, radius:16 },
   beach:        { font:'"Oswald",system-ui,sans-serif',              nodeSize:1, radius:24 },
@@ -11726,7 +12040,8 @@ const LOOK_CONFIG_DEFAULTS = {
   desert:       { font:'"Nunito",system-ui,sans-serif',               nodeSize:1, radius:12 },
   groot:        { font:'"Fredoka",system-ui,sans-serif',              nodeSize:1, radius:16 },
   sailboat:     { font:'"Quicksand",sans-serif',                       nodeSize:1, radius:20 },
-  mathematician:{ font:'"Cambria Math",serif',                              nodeSize:1, radius:14 },
+  mathematician:{ font:'"Cambria",Cambria,"Cambria Math",Georgia,serif', nodeSize:1, radius:14 },
+  matrix:       { font:'"Courier New",monospace',                       nodeSize:1, radius:4  },
 };
 const LOOK_CONFIG_BOUNDS = { nodeSize:[0.8,1.6], radius:[0,60] };
 // Repairs rather than rejects, like validateStyleConfig: numbers are clamped
@@ -11744,7 +12059,20 @@ function validateLookConfig(raw){
     const sec = raw[look];
     if(!sec || typeof sec !== 'object' || Array.isArray(sec)) continue;
     if(typeof sec.font === 'string' && sec.font.trim()){
-      out[look].font = sec.font.trim().slice(0, 60);
+      let font = sec.font.trim().slice(0, 60);
+      // Matrix's default font was JetBrains Mono before it became Courier New.
+      // Maps saved with the old default still pin that string and would override
+      // the look's own CSS forever; rewrite only that known-stale value.
+      if(look==='matrix' && font === '"JetBrains Mono",monospace'){
+        font = LOOK_CONFIG_DEFAULTS.matrix.font;
+      }
+      // Same trap as matrix: the Math Expert's default was the Palatino stack
+      // before it became Cambria. A map that saved its look settings pins the
+      // old string and would wear it forever, so rewrite that known value too.
+      if(look==='mathematician' && font === '"Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif'){
+        font = LOOK_CONFIG_DEFAULTS.mathematician.font;
+      }
+      out[look].font = font;
     }
     for(const key of ['nodeSize','radius']){
       const v = sec[key];
@@ -11771,7 +12099,9 @@ function applyLookConfigVars(){
   if(!root) return;
   const look = root.getAttribute('data-look') || 'office';
   const defaults = LOOK_CONFIG_DEFAULTS[look] || LOOK_CONFIG_DEFAULTS.office;
-  const cfg = { ...defaults, ...(((map && map.lookConfig) || {})[look] || {}) };
+  // validateLookConfig (not the raw map section) so stale fonts such as the
+  // old matrix JetBrains Mono default are migrated before they hit --sans.
+  const cfg = validateLookConfig(map && map.lookConfig)[look] || defaults;
   if(cfg.font){ root.style.setProperty('--sans', cfg.font); root.style.setProperty('--serif', cfg.font); }
   else { root.style.removeProperty('--sans'); root.style.removeProperty('--serif'); }
   if(cfg.nodeSize !== 1) root.style.setProperty('--look-node-size', cfg.nodeSize);
@@ -11851,6 +12181,7 @@ const THEME_CONFIG_DEFAULTS = {
   'quantum-violet':   { paper:'#0e0a18',  ink:'#d0c8e8', accent:'#8b5cf6', nodeBg:'#18122a', line:'#2a1e48', glow:'rgba(139,92,246,.08)' },
   'copper-rust':      { paper:'#16120e',  ink:'#e0d0c0', accent:'#ea580c', nodeBg:'#241a12', line:'#3a2a1e', glow:'rgba(234,88,12,.08)' },
   'lunar-silver':     { paper:'#0e1014',  ink:'#c8d0d8', accent:'#94a3b8', nodeBg:'#181c22', line:'#2a3038', glow:'rgba(148,163,184,.06)' },
+  'xmind-light':     { paper:'#f5f5f5',  ink:'#2d3436', accent:'#e86839', nodeBg:'#ffffff', line:'#dfe6e9', glow:'rgba(255,255,255,.6)' },
 };
 const THEME_CONFIG_BOUNDS = { color:[0,40] };
 // The six knobs and the CSS variable each one drives. One table: applying,
@@ -12422,25 +12753,296 @@ async function applyGrootFace(){
 // used to sit at the very end of the file, so the boot call reached them in
 // their temporal dead zone. The ReferenceError was swallowed by the empty
 // catch around that call and only the module-end sync made the layer appear.
-// Some looks need one real element to animate. The motion itself is always a
-// CSS keyframe animation on transform/opacity (see styles.css) so it runs on
-// the compositor and costs no main-thread work; this only creates and removes
-// the element, so every other look carries no extra DOM. prefers-reduced-motion
-// is handled in CSS, which hides the layer.
-const LOOK_FX = { sailboat:'wave-layer' };
-let _fxEl=null, _fxClass=null;
+// Some looks need one real element to animate - the sailboat needs four (three
+// boats at three speeds plus the swell they ride) - and the motion is either a
+// CSS keyframe on transform/opacity (composited, costs nothing; the sailboat's
+// four layers and the matrix look's ::before/::after rain backdrop run that
+// way) or a canvas that paints its own bitmap (the two entries in CANVAS_FX
+// below). What no look ever does again is drive element styles from a frame
+// loop, which is what this layer was doing when background-position cost
+// 859ms of main thread per 5s on a 6x-throttled CPU (measured; the fix
+// history lives in styles.css above the boat-layer rule).
+// prefers-reduced-motion hides the layers in CSS, and the canvas loops skip
+// their work to match.
+// LOOK_FX maps a look to the layer classes it mounts, top-most first.
+const LOOK_FX = { sailboat:['wave-layer','wave-layer-mid','wave-layer-far','swell-layer'], matrix:['matrix-rain'], mountain:['mountain-layer'] };
+let _fxEl=null, _fxEls=[], _fxLayers=null;
+// ---- Shared canvas plumbing (every animated look) ----
+// DPR sizing, the pause window that absorbs the 220ms side transition,
+// reduced motion, the ResizeObserver and the theme colour are identical for
+// the rain and the gondolas, so they live here once (AGENTS.md rule 3) and
+// each look contributes only what differs: canvas class, colour variable,
+// draw function, plus optionally size-dependent state to rebuild (onAlloc)
+// and state to release (onStop). The frame loop reads no layout, because a
+// clientWidth inside a loop forces reflow, and writes no element style,
+// because that is the incident named above.
+let _fxCanvas=null, _fxCtx=null, _fxRaf=null, _fxW=0, _fxH=0;
+let _fxPausedUntil=0, _fxResizeTimer=null, _fxResizeObs=null;
+let _fxDraw=null, _fxOnAlloc=null, _fxOnStop=null, _fxColorVar='', _fxColor='';
+let _fxReducedQ=null, _fxLast=0;
+const _MATRIX_CHARS='ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏﾐｶｷﾑﾕﾗｾﾈｽﾀﾇﾍｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻ0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+let _matrixCols=null;
+const CANVAS_FX = {
+  'matrix-rain': { canvasClass:'matrix-rain-canvas', colorVar:'--accent', draw:_drawMatrixRain,
+                   onAlloc:_allocMatrixCols, onStop:function(){ _matrixCols=null; } },
+  'mountain-layer': { canvasClass:'mountain-layer-canvas', colorVar:'--line', draw:_drawGondolas },
+};
+// Colour comes from a theme variable (--accent, --line), so it is re-read on
+// start, after a debounced resize and whenever the theme changes - the theme
+// lives in a data attribute, the theme CONFIG in inline style, so both are
+// observed - never per frame.
+function _fxUpdateColor(){
+  if(!_fxCtx || !_fxColorVar) return;
+  try{
+    const v=getComputedStyle(document.documentElement).getPropertyValue(_fxColorVar).trim();
+    if(v) _fxColor=v;
+  }catch(e){}
+}
+function _fxApplySize(){
+  if(!_fxCanvas || !stage) return;
+  const dpr=window.devicePixelRatio||1;
+  const sw=stage.clientWidth, sh=stage.clientHeight;
+  if(!sw||!sh) return;
+  const bw=Math.round(sw*dpr), bh=Math.round(sh*dpr);
+  // Same size: assigning canvas.width even to its current value throws the
+  // bitmap away, and onAlloc would rebuild state that never went stale.
+  if(sw===_fxW && sh===_fxH && _fxCanvas.width===bw && _fxCanvas.height===bh) return;
+  _fxW=sw; _fxH=sh;
+  _fxCanvas.width=bw; _fxCanvas.height=bh;
+  _fxCanvas.style.width=sw+'px'; _fxCanvas.style.height=sh+'px';
+  _fxCtx.setTransform(dpr,0,0,dpr,0,0);
+  if(_fxOnAlloc) _fxOnAlloc(sw,sh);
+}
+function _fxResize(){
+  if(!_fxCanvas || !stage) return;
+  const sw=stage.clientWidth, sh=stage.clientHeight;
+  if(!sw||!sh) return;
+  // Fast path: stretch via CSS only, compositor-side, so the 220ms side
+  // transition stays smooth; drawing pauses while it runs and the buffer
+  // realloc waits until the size has held still for 180ms. The initial
+  // ResizeObserver callback fires with the size _fxApplySize just wrote, and
+  // that one must NOT pause, or every look switch would start 260ms blank.
+  if((sw+'px') !== _fxCanvas.style.width || (sh+'px') !== _fxCanvas.style.height){
+    _fxCanvas.style.width=sw+'px';
+    _fxCanvas.style.height=sh+'px';
+    _fxPausedUntil=performance.now()+260;
+  }
+  if(_fxResizeTimer) clearTimeout(_fxResizeTimer);
+  _fxResizeTimer=setTimeout(()=>{
+    _fxResizeTimer=null;
+    _fxApplySize();
+    _fxUpdateColor();
+  }, 180);
+}
+function _fxFrame(now){
+  if(!_fxDraw || !_fxCtx){ _fxRaf=null; return; }
+  // .matches is read live, so flipping the OS setting takes effect next frame.
+  if(_fxReducedQ && _fxReducedQ.matches){ _fxRaf=requestAnimationFrame(_fxFrame); return; }
+  if(now < _fxPausedUntil){ _fxRaf=requestAnimationFrame(_fxFrame); return; }
+  const dt=Math.min(33, now - (_fxLast||now));
+  _fxLast=now;
+  if(!_fxW || !_fxH) _fxApplySize();
+  _fxDraw(_fxCtx, _fxW, _fxH, dt);
+  _fxRaf=requestAnimationFrame(_fxFrame);
+}
+function _startFxCanvas(spec){
+  if(!_fxEl || !spec) return;
+  _fxCanvas=_fxEl.querySelector('canvas');
+  if(!_fxCanvas){
+    _fxCanvas=document.createElement('canvas');
+    _fxCanvas.className=spec.canvasClass;
+    _fxEl.appendChild(_fxCanvas);
+  }
+  _fxCtx=_fxCanvas.getContext('2d');
+  _fxDraw=spec.draw; _fxOnAlloc=spec.onAlloc||null; _fxOnStop=spec.onStop||null;
+  _fxColorVar=spec.colorVar||''; _fxColor='';
+  _fxUpdateColor();
+  _fxApplySize();
+  _fxReducedQ=window.matchMedia('(prefers-reduced-motion: reduce)');
+  if(_fxResizeObs) _fxResizeObs.disconnect();
+  if(window.ResizeObserver){
+    _fxResizeObs=new ResizeObserver(_fxResize);
+    _fxResizeObs.observe(stage);
+  }
+  window.addEventListener('resize', _fxResize);
+  if(!_startFxCanvas._colorObs){
+    _startFxCanvas._colorObs=new MutationObserver(()=>_fxUpdateColor());
+    _startFxCanvas._colorObs.observe(document.documentElement, {attributes:true, attributeFilter:['data-theme','style']});
+  }
+  if(_fxRaf){ cancelAnimationFrame(_fxRaf); _fxRaf=null; }
+  _fxLast=0; _fxPausedUntil=0;
+  _fxRaf=requestAnimationFrame(_fxFrame);
+}
+function _stopFxCanvas(){
+  if(_fxRaf){ cancelAnimationFrame(_fxRaf); _fxRaf=null; }
+  if(_fxOnStop) _fxOnStop();
+  if(_fxResizeTimer){ clearTimeout(_fxResizeTimer); _fxResizeTimer=null; }
+  if(_fxResizeObs){ _fxResizeObs.disconnect(); _fxResizeObs=null; }
+  window.removeEventListener('resize', _fxResize);
+  _fxDraw=null; _fxOnAlloc=null; _fxOnStop=null;
+  _fxColorVar=''; _fxColor='';
+  _fxCanvas=null; _fxCtx=null; _fxW=0; _fxH=0; _fxPausedUntil=0;
+}
+function _allocMatrixCols(w, h){
+  const cols=Math.max(12, Math.floor(w/16));
+  // Keep existing columns when the count is close - cheaper than a full
+  // rebuild - and just clamp them into the new width.
+  if(!_matrixCols || Math.abs(cols-_matrixCols.length)>6){
+    _matrixCols=[];
+    for(let i=0;i<cols;i++){
+      const x=(i+0.5)*16 + (Math.random()*4-2);
+      const len=6+Math.floor(Math.random()*14);
+      const y=Math.random()*h - h*0.7;
+      const speed=0.55+Math.random()*1.15;
+      const colChars=Array.from({length:len},()=>_MATRIX_CHARS[Math.floor(Math.random()*_MATRIX_CHARS.length)]);
+      _matrixCols.push({x,y,len,speed,chars:colChars});
+    }
+  } else {
+    for(let i=0;i<_matrixCols.length;i++){
+      const c=_matrixCols[i];
+      if(c.x>w) c.x=(i+0.5)*16;
+    }
+  }
+}
+// ---- Mountain: two gondola cabins on a sagging cable (canvas) ----
+// The cable spans the width with a shallow sag - a quadratic whose midpoint
+// sits exactly `sag` below the anchors - and runs just past both edges, so
+// it reads as continuing beyond the map. Two cabins travel it in opposite
+// directions and wrap at the off-screen terminals the way a real loop works:
+// there is always one crossing. Each cabin hangs from the cable point and
+// swings on its hanger with a slow sine, pivot AT the cable, which is the
+// detail that sells the weight. Procedural from one time accumulator: no
+// allocation per frame, no layout read, no element style.
+function _drawGondolas(ctx, w, h, dt){
+  if(!w || !h) return;
+  ctx.clearRect(0,0,w,h);                      // no frame accumulates over the last
+  _drawGondolas.t = (_drawGondolas.t + dt) % 44000;   // two full traversals
+  const y0=Math.max(64, h*0.15);
+  const sag=Math.min(26, Math.max(12, w*0.03));
+  const x0=-10, x1=w+10, cx=w/2, cy=y0+2*sag;
+  ctx.lineWidth=1.5;
+  ctx.lineCap='round';
+  ctx.strokeStyle=_fxColor||'#8b9199';
+  ctx.globalAlpha=0.30;
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.quadraticCurveTo(cx, cy, x1, y0);
+  ctx.stroke();
+  const bez=function(p){
+    const u=1-p;
+    return { x:u*u*x0 + 2*u*p*cx + p*p*x1, y:u*u*y0 + 2*u*p*cy + p*p*y0 };
+  };
+  const cabin=function(p){
+    const pt=bez(((p%1)+1)%1);
+    ctx.save();
+    ctx.translate(pt.x, pt.y);
+    ctx.rotate(0.06*Math.sin(_drawGondolas.t*0.002 + p*7));
+    ctx.globalAlpha=0.42;
+    ctx.beginPath();                           // hanger arm
+    ctx.moveTo(0,0); ctx.lineTo(0,13);
+    ctx.stroke();
+    ctx.beginPath();                           // cabin body, rounded corners
+    ctx.moveTo(-6,13);
+    ctx.lineTo(6,13); ctx.quadraticCurveTo(9,13,9,16);
+    ctx.lineTo(9,23); ctx.quadraticCurveTo(9,26,6,26);
+    ctx.lineTo(-6,26); ctx.quadraticCurveTo(-9,26,-9,23);
+    ctx.lineTo(-9,16); ctx.quadraticCurveTo(-9,13,-6,13);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.globalAlpha=0.22;                      // window strip
+    ctx.beginPath();
+    ctx.moveTo(-6,18.5); ctx.lineTo(6,18.5);
+    ctx.moveTo(-6,22); ctx.lineTo(6,22);
+    ctx.stroke();
+    ctx.restore();
+  };
+  const t=_drawGondolas.t;
+  cabin(t/22000);                              // left to right
+  cabin(1.5 - t/22000);                        // right to left, half a loop apart
+  ctx.globalAlpha=1;
+}
+_drawGondolas.t=0;
+// ---- Matrix digital rain (canvas) ----
+// The loop, sizing, pause window, reduced motion and accent colour all come
+// from the shared plumbing above; this is only what the rain draws and how
+// its columns age. Still no per-frame layout read, no per-frame
+// getComputedStyle.
+function _drawMatrixRain(ctx, w, h, dt){
+  if(!w || !h) return;
+  if(!_matrixCols) _allocMatrixCols(w, h);
+  ctx.clearRect(0,0,w,h);
+  ctx.font='13px "Courier New",monospace';
+  ctx.textAlign='center';
+  ctx.textBaseline='top';
+  const accent=_fxColor||'#39ff88';
+  for(const col of _matrixCols){
+    col.y+=col.speed*dt*0.065;
+    if(col.y - col.len*14 > h+24){
+      col.y=-col.len*14 - Math.random()*h*0.4;
+      col.len=6+Math.floor(Math.random()*14);
+      col.speed=0.55+Math.random()*1.15;
+      col.chars=Array.from({length:col.len},()=>_MATRIX_CHARS[Math.floor(Math.random()*_MATRIX_CHARS.length)]);
+      col.x=(Math.floor(col.x/16)+0.5)*16 + (Math.random()*4-2);
+    }
+    for(let i=0;i<col.len;i++){
+      const y=col.y - i*14;
+      if(y< -14 || y> h) continue;
+      const isHead=i===0;
+      let ch=col.chars[i];
+      if(!isHead && Math.random()<0.012) ch=col.chars[i]=_MATRIX_CHARS[Math.floor(Math.random()*_MATRIX_CHARS.length)];
+      const alpha=isHead?0.96: Math.max(0, 0.58 - i*0.042);
+      ctx.globalAlpha=alpha;
+      if(isHead){
+        ctx.fillStyle='#ffffff';
+        ctx.shadowColor=accent;
+        ctx.shadowBlur=12;
+      } else {
+        const shine=i>1 && i<4 && Math.random()<0.06;
+        ctx.fillStyle=shine?'#c8ffce':accent;
+        ctx.shadowColor=shine?accent:'transparent';
+        ctx.shadowBlur=shine?7:0;
+      }
+      ctx.fillText(ch, col.x, y);
+      ctx.shadowBlur=0;
+    }
+  }
+  ctx.globalAlpha=1;
+}
 function _syncLookFx(){
-  const cls = LOOK_FX[document.documentElement.getAttribute('data-look')||'office'] || null;
-  if(cls === _fxClass) return;                 // nothing to do on most look changes
-  if(_fxEl){ _fxEl.remove(); _fxEl=null; }
-  _fxClass = cls;
-  if(cls){
-    _fxEl=document.createElement('div');
-    _fxEl.className=cls;
-    // First child, not last: it is scenery and has to paint UNDER the map.
-    // Appended after #viewport it sat on top, and the wave lines ran through
-    // every card - which reads as the whole map having gone transparent.
-    stage.insertBefore(_fxEl, stage.firstChild);
+  const layers = LOOK_FX[document.documentElement.getAttribute('data-look')||'office'] || null;
+  if(layers === _fxLayers) return;               // nothing to do on most look changes
+  _stopFxCanvas();                               // safe even when nothing was running
+  _fxEls.forEach(el=>el.remove()); _fxEls=[]; _fxEl=null;
+  _fxLayers = layers;
+  if(layers){
+    // One look can mount several layers: the sailboat has three boats (near,
+    // middle and far, each at its own speed) AND the swell they ride, and they
+    // have to animate independently or the hulls cannot float on the water.
+    // The registry lists them top-most first, and every layer goes in as the
+    // stage's FIRST child, so each entry lands underneath the one inserted
+    // before it.
+    layers.forEach(name=>{
+      _fxEl=document.createElement('div');
+      _fxEl.className=name;
+      // First child, not last: it is scenery and has to paint UNDER the map.
+      // Appended after #viewport it sat on top, and the wave lines ran through
+      // every card - which reads as the whole map having gone transparent.
+      stage.insertBefore(_fxEl, stage.firstChild);
+      _fxEls.push(_fxEl);
+    });
+    _fxEl=_fxEls[0];                             // top-most layer, the canvas host
+    const cls=_fxLayers[0];
+    const spec=CANVAS_FX[cls];
+    if(spec){
+      // rAF, not a direct call: the freshly inserted layer gets laid out
+      // before the first size read. The class check drops a start whose look
+      // was already switched away again in the same tick.
+      requestAnimationFrame(()=>{
+        if(_fxLayers===layers && _fxEl) _startFxCanvas(spec);
+      });
+    }
+    // No spec (the sailboat) means the layers' CSS keyframes already do the
+    // work - the elements existing is all they need.
   }
 }
 
@@ -13305,7 +13907,7 @@ function buildStyleThumb(id){
   if(id==='neon') return `<span class="style-thumb">
     <svg viewBox="0 0 70 60" width="70" height="40">
       ${rects(6)}
-      <path d="M26,28 C38,28 47,11 56,11 M26,28 C38,28 47,47 56,47" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M26,28 C38,28 47,11 56,11 M26,28 C38,28 47,47 56,47" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round"/>
     </svg>
   </span>`;
   if(id==='dashed') return `<span class="style-thumb">
@@ -13364,21 +13966,56 @@ function buildStyleThumb(id){
     <svg viewBox="0 0 70 60" width="70" height="40">
       <rect x="${ROOT.x}" y="${ROOT.y}" width="${ROOT.w}" height="${ROOT.h}" rx="3" fill="var(--accent)"/>
       <rect x="${CH1.x}" y="${CH1.y}" width="${CH1.w}" height="${CH1.h}" rx="3" fill="var(--card-bg,#fff)" stroke="var(--line)" stroke-width="1"/>
-      <line x1="${CH1.x+2}" y1="${CH1.y+4}" x2="${CH1.x+12}" y2="${CH1.y+4}" stroke="var(--line)" stroke-width="0.7" opacity="0.5"/>
-      <line x1="${CH1.x+2}" y1="${CH1.y+7}" x2="${CH1.x+12}" y2="${CH1.y+7}" stroke="var(--line)" stroke-width="0.7" opacity="0.5"/>
+      <line x1="${CH1.x+4.5}" y1="${CH1.y+4}" x2="${CH1.x+12}" y2="${CH1.y+4}" stroke="var(--line)" stroke-width="0.7" opacity="0.5"/>
+      <line x1="${CH1.x+4.5}" y1="${CH1.y+7}" x2="${CH1.x+12}" y2="${CH1.y+7}" stroke="var(--line)" stroke-width="0.7" opacity="0.5"/>
+      <line x1="${CH1.x+4}" y1="${CH1.y}" x2="${CH1.x+4}" y2="${CH1.y+CH1.h}" stroke="var(--accent)" stroke-width="0.8" opacity="0.8"/>
+      <circle cx="${CH1.x+1.6}" cy="${CH1.y+2.5}" r="0.7" fill="var(--ink)" opacity="0.3"/>
+      <circle cx="${CH1.x+1.6}" cy="${CH1.y+5}" r="0.7" fill="var(--ink)" opacity="0.3"/>
+      <circle cx="${CH1.x+1.6}" cy="${CH1.y+7.5}" r="0.7" fill="var(--ink)" opacity="0.3"/>
       <rect x="${CH2.x}" y="${CH2.y}" width="${CH2.w}" height="${CH2.h}" rx="3" fill="var(--card-bg,#fff)" stroke="var(--line)" stroke-width="1"/>
-      <line x1="${CH2.x+2}" y1="${CH2.y+4}" x2="${CH2.x+12}" y2="${CH2.y+4}" stroke="var(--line)" stroke-width="0.7" opacity="0.5"/>
-      <line x1="${CH2.x+2}" y1="${CH2.y+7}" x2="${CH2.x+12}" y2="${CH2.y+7}" stroke="var(--line)" stroke-width="0.7" opacity="0.5"/>
+      <line x1="${CH2.x+4.5}" y1="${CH2.y+4}" x2="${CH2.x+12}" y2="${CH2.y+4}" stroke="var(--line)" stroke-width="0.7" opacity="0.5"/>
+      <line x1="${CH2.x+4.5}" y1="${CH2.y+7}" x2="${CH2.x+12}" y2="${CH2.y+7}" stroke="var(--line)" stroke-width="0.7" opacity="0.5"/>
+      <line x1="${CH2.x+4}" y1="${CH2.y}" x2="${CH2.x+4}" y2="${CH2.y+CH2.h}" stroke="var(--accent)" stroke-width="0.8" opacity="0.8"/>
+      <circle cx="${CH2.x+1.6}" cy="${CH2.y+2.5}" r="0.7" fill="var(--ink)" opacity="0.3"/>
+      <circle cx="${CH2.x+1.6}" cy="${CH2.y+5}" r="0.7" fill="var(--ink)" opacity="0.3"/>
+      <circle cx="${CH2.x+1.6}" cy="${CH2.y+7.5}" r="0.7" fill="var(--ink)" opacity="0.3"/>
       <path d="M26,28 C38,28 47,11 56,11 M26,28 C38,28 47,47 56,47" fill="none" stroke="var(--line)" stroke-width="1.5" stroke-linecap="round"/>
-      <path d="M${CH1.x+CH1.w-3},${CH1.y} L${CH1.x+CH1.w},${CH1.y} L${CH1.x+CH1.w},${CH1.y+3} Z" fill="var(--line)" opacity="0.35"/>
-      <path d="M${CH2.x+CH2.w-3},${CH2.y} L${CH2.x+CH2.w},${CH2.y} L${CH2.x+CH2.w},${CH2.y+3} Z" fill="var(--line)" opacity="0.35"/>
+    </svg>
+  </span>`;
+  if(id==='terminal') return `<span class="style-thumb">
+    <svg viewBox="0 0 70 60" width="70" height="40">
+      <text x="${ROOT.x}" y="${ROOT.y+9}" font-family="monospace" font-size="8" font-weight="700" fill="var(--accent)">&#9646;</text>
+      <text x="${ROOT.x+8}" y="${ROOT.y+9}" font-family="monospace" font-size="7" fill="var(--ink)">root</text>
+      <line x1="${ROOT.x}" y1="${ROOT.y+11}" x2="${ROOT.x+ROOT.w}" y2="${ROOT.y+11}" stroke="var(--accent)" stroke-width="1.4"/>
+      <text x="${CH1.x}" y="${CH1.y+8}" font-family="monospace" font-size="7" font-weight="700" fill="var(--accent)">&gt;</text>
+      <text x="${CH1.x+7}" y="${CH1.y+8}" font-family="monospace" font-size="6.5" fill="var(--ink)">child</text>
+      <line x1="${CH1.x}" y1="${CH1.y+10}" x2="${CH1.x+CH1.w}" y2="${CH1.y+10}" stroke="var(--accent)" stroke-width="1.2"/>
+      <text x="${CH2.x}" y="${CH2.y+8}" font-family="monospace" font-size="7" font-weight="700" fill="var(--accent)">&gt;</text>
+      <text x="${CH2.x+7}" y="${CH2.y+8}" font-family="monospace" font-size="6.5" fill="var(--ink)">child</text>
+      <line x1="${CH2.x}" y1="${CH2.y+10}" x2="${CH2.x+CH2.w}" y2="${CH2.y+10}" stroke="var(--accent)" stroke-width="1.2"/>
+      <path d="M26,28 C38,28 47,11 56,11 M26,28 C38,28 47,47 56,47" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round"/>
+    </svg>
+  </span>`;
+  // Sketch bakes fixed tilts into the thumb so the panel advertises the live
+  // per-card rotate(var(--tilt)); edges stay put, like the canvas edges do.
+  if(id==='sketch') return `<span class="style-thumb">
+    <svg viewBox="0 0 70 60" width="70" height="40">
+      <g transform="rotate(2 ${ROOT.x+ROOT.w/2} ${ROOT.y+ROOT.h/2})">
+        <rect x="${ROOT.x}" y="${ROOT.y}" width="${ROOT.w}" height="${ROOT.h}" rx="2" fill="var(--accent)"/>
+      </g>
+      <g transform="rotate(-2.5 ${CH1.x+CH1.w/2} ${CH1.y+CH1.h/2})">
+        <rect x="${CH1.x}" y="${CH1.y}" width="${CH1.w}" height="${CH1.h}" rx="2" fill="var(--card-bg,#fff)" stroke="var(--ink)" stroke-width="1.5"/>
+      </g>
+      <g transform="rotate(2.5 ${CH2.x+CH2.w/2} ${CH2.y+CH2.h/2})">
+        <rect x="${CH2.x}" y="${CH2.y}" width="${CH2.w}" height="${CH2.h}" rx="2" fill="var(--card-bg,#fff)" stroke="var(--ink)" stroke-width="1.5"/>
+      </g>
+      <path d="M26,28 L56,11 M26,28 L56,47" fill="none" stroke="var(--ink-soft)" stroke-width="1.6"/>
     </svg>
   </span>`;
   let path;
   if(id==='classic') path='M26,28 L40,28 L40,11 L56,11 M26,28 L40,28 L40,47 L56,47';
-  else if(id==='sketch') path='M26,28 L56,11 M26,28 L56,47';
   else path='M26,28 C38,28 47,11 56,11 M26,28 C38,28 47,47 56,47';
-  const radius = id==='bubble'? 6 : id==='classic'? 2 : id==='sketch'? 2 : 3;
+  const radius = id==='bubble'? 6 : id==='classic'? 2 : 3;
   const stroke = id==='bubble'? 2.2 : 1.4;
   return `<span class="style-thumb">
     <svg viewBox="0 0 70 60" width="70" height="40">
@@ -13494,7 +14131,7 @@ $('#themeBtn').onclick=(e)=>{
     }
   }
   const curLook   = document.documentElement.getAttribute('data-look')  || 'office';
-  const curStyle  = (map && map.style)  || 'modern';
+  const curStyle  = resolvedMapStyle(map);
   const curLayout = (map && (map.layoutPreset || map.layout)) || 'balanced';
   const curUi     = document.body.classList.contains('ui-zen') ? 'zen'
                   : (document.body.classList.contains('ui-dock') ? 'dock'
@@ -13779,7 +14416,7 @@ function showDonateModal(){
         <div class="donate-providers">
           <div class="donate-label">Donate via</div>
           ${providers.map(p=>`
-            <button class="donate-provider" data-k="${p.k}" style="--p-color:${p.color}">
+            <button class="donate-provider" data-k="${p.k}" style="--p-color:${p.color};--p-ink:${inkOn(p.color)}">
               <span class="dp-icon">${p.icon}</span>
               <span class="dp-label">${p.label}</span>
               <span class="dp-arrow">→</span>

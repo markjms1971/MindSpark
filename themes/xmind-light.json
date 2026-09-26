@@ -1,0 +1,27 @@
+{
+  "v": 1,
+  "id": "xmind-light",
+  "name": "XMind Light",
+  "vars": {
+    "--toolbar-bg": "#ffffff",
+    "--toolbar-text": "#2d3436",
+    "--paper": "#f5f5f5",
+    "--paper-2": "#eeeeee",
+    "--ink": "#2d3436",
+    "--ink-soft": "#636e72",
+    "--line": "#dfe6e9",
+    "--line-2": "#b2bec3",
+    "--accent": "#e86839",
+    "--accent-deep": "#d35400",
+    "--teal": "#1a8a7d",
+    "--chrome": "#ffffff",
+    "--chrome-edge": "#e0e0e0",
+    "--node-bg": "#ffffff",
+    "--node-ink": "#2d3436",
+    "--canvas-dot": "#e8e8e8",
+    "--stage-glow": "rgba(255,255,255,.6)",
+    "--link": "#d35400",
+    "--shadow": "0 1px 3px rgba(0,0,0,.06), 0 4px 12px rgba(0,0,0,.08)",
+    "--shadow-lg": "0 4px 16px rgba(0,0,0,.12)"
+  }
+}
