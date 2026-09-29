@@ -13,7 +13,7 @@
  */
 'use strict';
 
-const { execSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const path = require('node:path');
 const os = require('node:os');
 
@@ -22,24 +22,24 @@ const PORT = process.env.PORT || 3000;
 const OPEN_BROWSER = process.env.NO_BROWSER !== '1';
 
 // ---- Open browser (cross-platform) --------------------------------------
+// Detached and unref'd: the opener must never block this process, which IS the
+// HTTP server. execSync used to wait for it - and an opener that does not return
+// at once (sensible-browser falling back to a terminal browser, some xdg setups)
+// froze the server the browser was trying to load.
 function openBrowser(url) {
-  try {
-    const platform = os.platform();
-    if (platform === 'win32') {
-      execSync(`start "" "${url}"`, { stdio: 'ignore', shell: true });
-    } else if (platform === 'darwin') {
-      execSync(`open "${url}"`, { stdio: 'ignore' });
-    } else {
-      // Linux / other - try xdg-open, then sensible-browser
-      try {
-        execSync(`xdg-open "${url}"`, { stdio: 'ignore' });
-      } catch {
-        execSync(`sensible-browser "${url}"`, { stdio: 'ignore' });
-      }
+  const platform = os.platform();
+  const run = (cmd, args, next) => {
+    try {
+      const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+      child.on('error', () => { if (next) next(); });
+      child.unref();
+    } catch {
+      if (next) next();
     }
-  } catch {
-    // Silently ignore if we can't open a browser (headless server, etc.)
-  }
+  };
+  if (platform === 'win32') run('cmd', ['/c', 'start', '', url]);   // '' = the window-title slot start expects
+  else if (platform === 'darwin') run('open', [url]);
+  else run('xdg-open', [url], () => run('sensible-browser', [url]));   // Linux / other
 }
 
 // ---- Start the server ----------------------------------------------------
@@ -55,9 +55,10 @@ console.log(`
 const isPkg = typeof process.pkg !== 'undefined';
 
 if (isPkg) {
-  // Inside pkg, __dirname is the snapshot path (e.g. /snapshot/mindspark/)
-  // PUBLIC should resolve inside the snapshot (where assets are bundled).
-  process.env.PUBLIC = process.env.PUBLIC || path.join(__dirname, 'public');
+  // Inside pkg, __dirname is the snapshot path (e.g. /snapshot/mindspark/).
+  // MS_PUBLIC, not PUBLIC: Windows sets PUBLIC (C:\Users\Public) for every
+  // process, so `process.env.PUBLIC || ...` never took effect there.
+  process.env.MS_PUBLIC = process.env.MS_PUBLIC || path.join(__dirname, 'public');
 
   // Database should be in the real filesystem (next to the exe), not inside the snapshot.
   if (!process.env.DB_PATH) {
@@ -68,20 +69,17 @@ if (isPkg) {
 
 process.env.PORT = String(PORT);
 
-// Start the server by requiring it (this triggers server.listen())
 const serverUrl = `http://localhost:${PORT}`;
 
-// Give the server a moment to bind, then open the browser
-const startDelay = 500; // ms
-
 try {
-  require('./server.js');
-
+  // Requiring it starts it (server.listen()); open the browser once it listens -
+  // not after a fixed delay, and never when the port turned out to be taken.
+  const server = require('./server.js');
   if (OPEN_BROWSER) {
-    setTimeout(() => {
+    server.once('listening', () => {
       console.log(`  Opening browser → ${serverUrl}\n`);
       openBrowser(serverUrl);
-    }, startDelay);
+    });
   }
 } catch (err) {
   console.error('\n  Failed to start MindSpark server:\n');

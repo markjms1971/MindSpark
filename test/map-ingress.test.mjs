@@ -19,7 +19,8 @@ import { dirname, join } from 'node:path';
 const APP = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'public', 'app.js'), 'utf8');
 
 let n = 0;
-const { sanitizeMapData, safeColor, safeImageUrl } = loadFns(['sanitizeMapData', 'safeColor', 'safeImageUrl'], {
+const { sanitizeMapData, safeColor, safeImageUrl } = loadFns(['sanitizeMapData', 'sanitizeNodeFields', 'repairTree', 'safeColor', 'safeImageUrl'], {
+  UNSAFE_NODE_IDS: extractConst('UNSAFE_NODE_IDS'),
   uid: () => 'fresh' + (++n),
   SAFE_COLOR_RE: extractConst('SAFE_COLOR_RE'),
   SAFE_ID_RE: extractConst('SAFE_ID_RE'),

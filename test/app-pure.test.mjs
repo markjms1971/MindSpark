@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { loadFns, extractConst } from './helpers/load-app-fns.mjs';
 
 const { prettyUrl, pickContrast, escapeHtml, shade, edgePath, edgePathsHTML } =
-  loadFns(['prettyUrl', 'pickContrast', 'escapeHtml', 'shade', 'edgePath', 'edgePathsHTML']);
+  loadFns(['prettyUrl', 'pickContrast', 'escapeHtml', 'shade', 'hex6', 'edgePath', 'edgePathsHTML'], { _hex6Cache: new Map() });
 const URL_RE = extractConst('URL_RE');
 
 describe('prettyUrl - shortens link labels for display', () => {

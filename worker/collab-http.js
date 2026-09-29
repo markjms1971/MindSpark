@@ -35,11 +35,13 @@ async function applyClaims(storage, d, ident, acl, editToken, request){
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 function isSafeKey(k){ return typeof k === 'string' && !UNSAFE_KEYS.has(k); }
 function applyOps(snap, ops){
-  snap.nodes = snap.nodes || {};
+  if(!snap.nodes || typeof snap.nodes !== 'object' || Array.isArray(snap.nodes)) snap.nodes = {};
   for(const op of (ops || [])){
     if(op && op.t === 'node' && op.id && isSafeKey(op.id)) snap.nodes[op.id] = op.n;
     else if(op && op.t === 'del' && op.id && isSafeKey(op.id)) delete snap.nodes[op.id];
-    else if(op && op.t === 'meta' && op.k && isSafeKey(op.k)) snap[op.k] = op.v;
+    // `nodes` is only ever changed node by node: a meta op replacing it with a
+    // string made every later node op throw, and the room answered 500 for good.
+    else if(op && op.t === 'meta' && op.k && isSafeKey(op.k) && op.k !== 'nodes') snap[op.k] = op.v;
   }
   return snap;
 }
@@ -157,3 +159,9 @@ export async function socketAllowed(storage, identity, need){
   const editToken = await storage.get('editToken');
   return authorizeRequest({ acl, editToken, identity, tokenHeader: '', need, allowClaim: false }).ok;
 }
+
+// The only peer messages the room passes on. welcome/join/leave/name are the
+// room's own to send; a peer forging one (a 'welcome' carrying a snapshot makes
+// every joining guest adopt it) is dropped, whatever its access.
+const RELAYED = new Set(['op', 'cur', 'ping']);
+export function isRelayedPeerMessage(m){ return !!m && typeof m === 'object' && RELAYED.has(m.t); }
