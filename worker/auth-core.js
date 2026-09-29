@@ -74,7 +74,10 @@ export function authorizeRequest({ acl, editToken, identity, tokenHeader, need, 
 
   if(need === 'admin'){
     if(role === 'owner') return { ok:true, role:'owner' };
-    if(identity && !acl && allowClaim) return { ok:true, role:'owner', claim:true };   // first authed user claims & administers
+    // first authed user claims & administers - but a legacy token map belongs to
+    // whoever holds its token, so a signed-in stranger who only knows the room id
+    // (from a view or live link) must not be able to take it over.
+    if(identity && !acl && allowClaim && (!editToken || tokenOk)) return { ok:true, role:'owner', claim:true };
     return { ok:false, status: unauthStatus };
   }
 
@@ -86,7 +89,7 @@ export function authorizeRequest({ acl, editToken, identity, tokenHeader, need, 
       return { ok:false, status: unauthStatus };
     }
     // No ACL yet (legacy / unclaimed):
-    if(identity && allowClaim) return { ok:true, role:'owner', claim:true };  // first authed PUBLISH becomes owner
+    if(identity && allowClaim && (!editToken || tokenOk)) return { ok:true, role:'owner', claim:true };  // first authed PUBLISH becomes owner (token maps: only the token holder)
     if(tokenOk)  return { ok:true, role:'link-editor' };                       // legacy: matching token edits
     if(!editToken && allowClaim) return { ok:true, role:'link-editor', claimToken:true }; // very first PUT claims the token
     return { ok:false, status: unauthStatus };

@@ -18,6 +18,8 @@ function harness({ saveImpl }) {
   const map = { id: 'm1' };
   const fn = new Function('$', 'setTimeout', 'clearTimeout', 'toast', 'Store', 'MODE', 'forgeName', 'READONLY',
     `let map = arguments[8]; let saveTimer = null; let _pendingSaveMap = null; let scheduleCloudSave = () => {};
+     const _saveRuns = new WeakMap(); let _savesInFlight = 0;
+     ${extractFunction('_runSave')}
      ${extractFunction('scheduleSave')}
      return scheduleSave;`)($, setTimeout, clearTimeout, m => toasts.push(m), Store, 'cloud', () => 'GitLab', false, map);
   return { run: fn, timers, toasts, saves, el };
@@ -35,6 +37,22 @@ describe('scheduleSave and conflicts', () => {
     h.run(); await flush(h.timers);
     assert.equal(h.saves.length, 2, 'one retry');
     assert.match(h.toasts[0], /saved on this device and will retry/);
+    assert.equal(h.el.saveText.textContent, 'Saved');
+  });
+
+  // An edit made while a save of the same map is still on the wire used to start a
+  // second, overlapping save - on GitLab it carried a stale lock and came back as a
+  // false "changed elsewhere". It now waits for the first and runs once after it.
+  test('an edit during a save waits for it, then saves once more', async () => {
+    let release, n = 0;
+    const h = harness({ saveImpl: () => { n++; if (n === 1) return new Promise(r => { release = r; }); } });
+    h.run();
+    const first = h.timers.shift().fn();          // save #1 starts and stays on the wire
+    h.run();                                       // an edit lands meanwhile
+    await h.timers.shift().fn();                   // its timer fires: it must queue, not overlap
+    assert.equal(h.saves.length, 1, 'no second request while the first is in flight');
+    release(); await first;
+    assert.equal(h.saves.length, 2, 'the queued save runs once the first has landed');
     assert.equal(h.el.saveText.textContent, 'Saved');
   });
 

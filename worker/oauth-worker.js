@@ -37,7 +37,9 @@ export default {
     // Live collaboration WebSocket: /api/collab/<roomId> -> the map's Durable Object.
     if (url.pathname.startsWith('/api/collab/')) {
       const rest = url.pathname.slice('/api/collab/'.length);
-      const room = decodeURIComponent(rest.split('/')[0] || '');   // first segment only; /acl,/link go to the DO
+      let room = '';
+      try { room = decodeURIComponent(rest.split('/')[0] || ''); }   // first segment only; /acl,/link go to the DO
+      catch (e) { return new Response('bad room name', { status: 400 }); }   // a malformed %-escape threw -> 500
       if (!room) return new Response('room required', { status: 400 });
       const stub = env.COLLAB.get(env.COLLAB.idFromName(room));
       return stub.fetch(request);

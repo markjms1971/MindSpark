@@ -150,3 +150,62 @@ describe('authorizeRequest - admin', () => {
     assert.equal(r.ok, false);
   });
 });
+
+// A legacy token map (an edit token stored, no ACL yet) belongs to whoever
+// holds the token. The "first signed-in writer becomes owner" rule used to run
+// BEFORE the token check, so any signed-in stranger who knew the room id - it
+// is in every view and live link - could PUT once, become owner, and lock the
+// real author out by setting linkAccess to 'none'.
+describe('authorizeRequest - claiming a legacy token map', () => {
+  const legacy = { acl: null, editToken: 'secret' };
+
+  test('a signed-in stranger WITHOUT the token cannot claim it by writing', () => {
+    const r = authorizeRequest({ ...legacy, identity: OTHER, tokenHeader: '', need: 'write' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 403);
+    assert.notEqual(r.claim, true);
+  });
+
+  test('a signed-in stranger with the WRONG token cannot claim it', () => {
+    const r = authorizeRequest({ ...legacy, identity: OTHER, tokenHeader: 'guess', need: 'write' });
+    assert.equal(r.ok, false);
+  });
+
+  test('a signed-in stranger cannot claim it through the admin (access panel) route', () => {
+    const r = authorizeRequest({ ...legacy, identity: OTHER, tokenHeader: '', need: 'admin' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 403);
+  });
+
+  test('the token holder, signed in, still claims it on write and on admin', () => {
+    for (const need of ['write', 'admin']) {
+      const r = authorizeRequest({ ...legacy, identity: OWNER, tokenHeader: 'secret', need });
+      assert.equal(r.ok, true, need);
+      assert.equal(r.claim, true, need);
+      assert.equal(r.role, 'owner', need);
+    }
+  });
+
+  test('an anonymous token holder still edits as before', () => {
+    const r = authorizeRequest({ ...legacy, tokenHeader: 'secret', need: 'write' });
+    assert.equal(r.ok, true);
+    assert.equal(r.role, 'link-editor');
+  });
+
+  test('reading stays open for a pre-ACL map', () => {
+    assert.equal(authorizeRequest({ ...legacy, identity: OTHER, need: 'read' }).ok, true);
+  });
+});
+
+// The Manage-access panel is the admin route above, so it has to prove the
+// token too, or the real owner of a legacy map could no longer claim it there.
+describe('client access API sends the edit token', () => {
+  test('accessApi() adds X-Edit-Token when the open map holds this room\'s token', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    const body = src.slice(src.indexOf('async function accessApi('), src.indexOf('async function _resolveCollaborator('));
+    assert.match(body, /'X-Edit-Token'\s*:\s*tok/);
+    assert.match(body, /_cloudEdit\.token/);
+    assert.match(body, /_editToken/);
+  });
+});

@@ -48,8 +48,12 @@ const ServerStore = {
   async get(id){ try{ return await this._j('api/maps/'+id); }catch(e){ return null; } },
   async save(map){
     map.updated=Date.now();
-    try{ await this._j('api/maps/'+map.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(map)}); }
-    catch(e){ await this._j('api/maps',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(map)}); }
+    const body=JSON.stringify(map);
+    // keepalive lets a save started as the page closes finish anyway. Browsers
+    // cap such a request at 64 KB, so a bigger map relies on the unload prompt.
+    const keepalive = body.length*3 < 60000 || new Blob([body]).size < 60000;
+    try{ await this._j('api/maps/'+map.id,{method:'PUT',headers:{'Content-Type':'application/json'},body,keepalive}); }
+    catch(e){ await this._j('api/maps',{method:'POST',headers:{'Content-Type':'application/json'},body,keepalive}); }
   },
   async remove(id){ try{ await this._j('api/maps/'+id,{method:'DELETE'}); }catch(e){ console.warn('map delete failed on the server; it is gone locally but may still exist remotely:', e.message); } },
   // Version history (SQLite-backed snapshots)
@@ -425,6 +429,9 @@ function cspAllowsInstance(instance){
 // and must already exist. A deployment for a team sets its shared project here
 // so nobody has to type it.
 const DEFAULT_REPO = 'mindspark-maps';
+// How stale a map's "last updated" stamp in _index.json may get before an
+// autosave refreshes it (it only orders the sidebar on other devices).
+const INDEX_STAMP_MS = 10*60*1000;
 
 const CloudStore = {
   token:null, user:null, repo:DEFAULT_REPO,
@@ -610,9 +617,19 @@ const CloudStore = {
       await this._loadDeleted();
       return true;
     }catch(e){
-      console.warn('Stored '+this.forge.label+' token rejected:', e.message);
       this.token=null; this.user=null;
-      localStorage.removeItem(this._tokenKey());
+      // Only a forge that REFUSED the token ends the session, and _fetch() has
+      // already forgotten it then (sessionExpired). Being offline, a 5xx, or
+      // GitHub's 403 rate limit say nothing about the token: it is kept, so the
+      // next load signs in by itself instead of asking for a token the user may
+      // not have to hand any more.
+      if(this.sessionExpired || (e && e.status===401)){
+        console.warn('Stored '+this.forge.label+' token rejected:', e.message);
+        localStorage.removeItem(this._tokenKey());
+      } else {
+        console.warn('Could not verify the stored '+this.forge.label+' token (kept):', e.message);
+        this.lastInitError=e;
+      }
       return false;
     }
   },
@@ -768,11 +785,13 @@ const CloudStore = {
   // ONE commit and every touched path adopts the new commit id. Elsewhere they
   // go one file at a time through _writeFile/_deleteFile, which carry their own
   // recovery - so GitHub and Gitea behave exactly as they always have.
-  async _commitFiles(message, actions){
+  // `guarded` names the one path whose change elsewhere must be reported, not
+  // written over (see _commitMerged); only the file-by-file forges need telling.
+  async _commitFiles(message, actions, guarded){
     if(!this.forge.commitUrl){
       for(const a of actions){
         if(a.action==='delete'){ await this._deleteFile(a.path, a.version); this._setVersion(a.path, null); }
-        else this._setVersion(a.path, await this._writeFile(a.path, a.content, a.version));
+        else this._setVersion(a.path, await this._writeFile(a.path, a.content, a.version, a.path===guarded));
       }
       return;
     }
@@ -800,7 +819,7 @@ const CloudStore = {
   async _commitMerged(message, build, guarded){
     const sent = guarded ? (this._versionOf(guarded)||null) : null;
     const first=build();
-    try{ await this._commitFiles(message, first); return; }
+    try{ await this._commitFiles(message, first, guarded); return; }
     catch(e){
       if(!(e.status===400 || e.status===409 || e.status===422)) throw e;
       const fresh=await this._refreshVersions(first.map(a=>a.path));
@@ -811,7 +830,7 @@ const CloudStore = {
       }
       if(first.some(a=>a.path==='_index.json')) await this._mergedIndex();
       if(first.some(a=>a.path==='_deleted.json')) await this._mergedDeleted();
-      await this._commitFiles(message, build(fresh));
+      await this._commitFiles(message, build(fresh), guarded);
     }
   },
   // List map ids present in the maps/ folder.
@@ -860,7 +879,12 @@ const CloudStore = {
   // rather than trusting our cached sha, because both directions happen in
   // practice: a map written from another device makes our "create" a conflict,
   // and a deleted-then-resaved map makes our "update" a 404.
-  async _writeFile(path, content, sha){
+  // `strict` is for the guarded path - the map itself. There a refused write
+  // (409/422: the file moved on since we read it) is thrown to _commitMerged,
+  // which tells a real conflict from a stale lock, instead of being re-read and
+  // written over: that recovery silently discarded whatever another device had
+  // saved, on GitHub and Gitea alike, while GitLab reported it.
+  async _writeFile(path, content, sha, strict){
     const url=this.forge.writeUrl(this._ref(), path);
     const readUrl=this.forge.contentsUrl(this._ref(), path);
     const encoded=this._encode(content);
@@ -870,6 +894,9 @@ const CloudStore = {
     // A create must not carry a sha at all: Forgejo's CreateFileOptions has no
     // such property and rejects the request rather than ignoring it.
     let r = sha ? await send('PUT',{sha}) : await send(this.forge.createFileMethod,{});
+    if(!r.ok && strict && (r.status===409 || r.status===422)){
+      const e=new Error('Write '+path+' refused on '+this.forge.label+' (HTTP '+r.status+')'); e.status=r.status; throw e;
+    }
     if(!r.ok && (r.status===409 || r.status===422 || r.status===404)){
       const cur=await this._fetch(readUrl);
       if(cur.status===404){
@@ -920,7 +947,12 @@ const CloudStore = {
   async get(id){
     try{
       const r=await this._fetch(this.forge.contentsUrl(this._ref(), `maps/${id}.json`));
-      if(r.status===404){ const b=this._localBackup(id); if(b) return b; return null; }
+      if(r.status===404){
+        // Deleted (tombstoned) elsewhere: the local backup must not bring it back -
+        // opening it and making any edit re-created the file.
+        if(this.deleted.includes(id)){ try{ localStorage.removeItem('mindspark:backup:'+id); }catch(e){} return null; }
+        const b=this._localBackup(id); if(b) return b; return null;
+      }
       if(!r.ok) throw new Error('Could not load map (HTTP '+r.status+')');
       const data=await r.json();
       this.shas[id]=this.forge.readVersion(data);
@@ -956,24 +988,36 @@ const CloudStore = {
   },
   async save(map){
     map.updated=Date.now();
+    // Store compact (not pretty-printed): pretty-printing inflates large maps
+    // past GitHub's 1 MB Contents-API limit, which then breaks reads. Serialised
+    // once, for the local backup and the write alike.
+    const json=JSON.stringify(map);
     // Durability net: keep a local copy *before* the network write, so a failed
     // or interrupted GitHub save can never lose the user's edits.
-    try{ localStorage.setItem('mindspark:backup:'+map.id, JSON.stringify(map)); }catch(e){}
+    try{ localStorage.setItem('mindspark:backup:'+map.id, json); }catch(e){}
     const entry={id:map.id, title:map.title, color:map.color, updated:map.updated};
     if(map.pinned) entry.pinned=true;
     const i=this.index.findIndex(m=>m.id===map.id);
+    const prev=i>=0 ? this.index[i] : null;
     if(i>=0) this.index[i]=entry; else this.index.unshift(entry);
     this.index.sort((a,b)=>b.updated-a.updated);
-    await this._mergedIndex();
-    // Store compact (not pretty-printed): pretty-printing inflates large maps
-    // past GitHub's 1 MB Contents-API limit, which then breaks reads. The map
-    // and the index land together - one commit where the forge allows it - and
-    // the map is the guarded path: a change to it elsewhere is a conflict.
+    // The index lists title, colour, pin and a recency stamp. It is written when
+    // one of the first three changed, or when the stamp it holds for this map is
+    // older than INDEX_STAMP_MS - not on every autosave, which cost a read and a
+    // second commit each time (GitHub: 3 requests and 2 commits per save against
+    // a 5000-requests-an-hour budget, and two commits of history per keystroke).
+    this._idxStamp=this._idxStamp||{};
+    const written=this._idxStamp[map.id];
+    const indexDue = !prev || prev.title!==entry.title || prev.color!==entry.color || !!prev.pinned!==!!entry.pinned
+      || !(written>0) || entry.updated-written > INDEX_STAMP_MS;
     const path=`maps/${map.id}.json`;
-    await this._commitMerged(`MindSpark: update ${path}`, ()=>[
-      this._action(path, JSON.stringify(map)),
-      this._action('_index.json', JSON.stringify(this.index))
-    ], path);
+    // The map and the index land together - one commit where the forge allows
+    // it - and the map is the guarded path: a change to it elsewhere is a conflict.
+    if(indexDue) await this._mergedIndex();
+    await this._commitMerged(`MindSpark: update ${path}`, ()=> indexDue
+      ? [ this._action(path, json), this._action('_index.json', JSON.stringify(this.index)) ]
+      : [ this._action(path, json) ], path);
+    if(indexDue) this._idxStamp[map.id]=entry.updated;
   },
   async remove(id){
     const path=`maps/${id}.json`;
@@ -1430,14 +1474,26 @@ function applyView(){
 // deliberately: a missed field shows up as a node that silently never updates,
 // which is far worse than an occasional redundant rebuild.
 const _nodeEls=new Map();    // id -> element currently in the DOM
+let _lastNodeOrder=[];       // ids in the DOM order the last render() left them
 const _nodeSig=new Map();    // id -> signature it was built from
 // Bumped whenever a web font finishes loading. A node's cached size was
 // measured against whatever font was resolved at build time, and a font
 // swapping in later changes that size without changing any field of the node,
 // so nothing else in the signature can see it. See applyLook().
 let _fontEpoch=0;
+// An attached image can be megabytes of data URI. The signature only has to tell
+// images apart, so it carries a short key per distinct image string (exact: a Map
+// lookup compares the strings) instead of copying every image into every
+// signature on every render - and keeping that copy alive in _nodeSig.
+const _imgKeys=new Map(); let _imgKeySeq=0;
+function _imageKey(src){
+  let k=_imgKeys.get(src);
+  if(k===undefined){ if(_imgKeys.size>=500) _imgKeys.clear(); k='img#'+(++_imgKeySeq)+':'+src.length; _imgKeys.set(src,k); }
+  return k;
+}
 function _nodeSignature(id, n, hasKids, roll, zd, key){
-  const own=JSON.stringify(n, (k,v)=> (k==='x'||k==='y'||k==='w'||k==='h') ? undefined : v);
+  const own=JSON.stringify(n, (k,v)=> (k==='x'||k==='y'||k==='w'||k==='h') ? undefined
+    : (k==='image' && typeof v==='string' && v.length>256) ? _imageKey(v) : v);
   // A formula node shows a value derived from OTHER nodes, so its own fields
   // can be identical while what it displays has changed.
   let extra='';
@@ -1448,7 +1504,7 @@ function _nodeSignature(id, n, hasKids, roll, zd, key){
 }
 function clearNodes(){
   document.querySelectorAll('.node').forEach(n=>n.remove());
-  _nodeEls.clear(); _nodeSig.clear();
+  _nodeEls.clear(); _nodeSig.clear(); _lastNodeOrder=[];
 }
 
 function render(){
@@ -1502,24 +1558,34 @@ function render(){
     document.documentElement.getAttribute('data-look')||'office', _fontEpoch, linkFaviconsEnabled()?'fav':'nofav',
     JSON.stringify(map.styleConfig||{}), JSON.stringify(map.lookConfig||{})].join('|');
   const _seen=new Set();
+  // DOM order follows map.nodes, which decides stacking when two nodes overlap.
+  // Unchanged elements used to be re-appended on EVERY render - a DOM move per
+  // node per pass, and a move takes focus away, so a collaborator's edit threw the
+  // user out of the node they were typing in. Now nothing moves while the order
+  // still matches the last render; from the first node that differs (new, rebuilt
+  // or reordered) the rest are re-appended in order - except the node being
+  // edited, which keeps its place and its caret.
+  const _order=[]; let _inOrder=true;
   // nodes
   for(const id in map.nodes){
     if(hidden.has(id)) continue;
     const n=map.nodes[id];
     const hasKids=childrenOf(id).length>0;
     _seen.add(id);
+    if(_inOrder && _lastNodeOrder[_order.length]!==id) _inOrder=false;
+    _order.push(id);
     const _sig=_nodeSignature(id, n, hasKids, roll, zd, _metricsKey);
     const _old=_nodeEls.get(id);
     if(_old && _nodeSig.get(id)===_sig){
       // Unchanged: keep the element and its measured size. Position and the
       // selection class are the only things that can differ, and neither needs
-      // a re-measure. Re-appended so DOM order still follows map.nodes, which
-      // is what decides stacking when two nodes overlap.
+      // a re-measure.
       _old.style.left=n.x+'px'; _old.style.top=n.y+'px';
       _old.classList.toggle('sel', id===sel);
-      viewport.appendChild(_old);
+      if(!_inOrder && !_old.classList.contains('editing')) viewport.appendChild(_old);
       continue;
     }
+    _inOrder=false;                     // this element goes to the end: everything after it must follow
     if(_old) _old.remove();
     const el=document.createElement('div');
     el.className='node'+(id===map.rootId?' root':'')+(id===sel?' sel':'')+(hasKids&&n.collapsed?' collapsed':'')+(n.side==='left'?' left':'');
@@ -1743,6 +1809,7 @@ function render(){
   for(const [id, el] of _nodeEls){
     if(!_seen.has(id)){ el.remove(); _nodeEls.delete(id); _nodeSig.delete(id); }
   }
+  _lastNodeOrder=_order;
   // Measure ALL nodes in one pass AFTER appending - reading getBoundingClientRect
   // interleaved with appends forces a layout reflow per node (O(n) thrash). One
   // batched read loop triggers a single reflow. getBoundingClientRect returns
@@ -2337,8 +2404,29 @@ function autoLinkPlainTextNodes(root){
 function colorFor(hex){ // root gradient
   return `linear-gradient(135deg, ${hex}, ${shade(hex,-22)})`;
 }
+// Any colour the sanitizer accepts (#rgb, #rrggbb, #rrggbbaa, rgb(), a name) as
+// #rrggbb, for the helpers that do arithmetic on hex digits: a 3-digit or named
+// root colour made shade() compute a dark gradient out of garbage.
+const _hex6Cache=new Map();
+function hex6(c){
+  const v=String(c||'').trim();
+  if(/^#[0-9a-f]{6}$/i.test(v)) return v;
+  if(/^#[0-9a-f]{3}$/i.test(v)) return '#'+v[1]+v[1]+v[2]+v[2]+v[3]+v[3];
+  if(/^#[0-9a-f]{8}$/i.test(v)) return v.slice(0,7);
+  if(/^#[0-9a-f]{4}$/i.test(v)) return '#'+v[1]+v[1]+v[2]+v[2]+v[3]+v[3];
+  if(_hex6Cache.has(v)) return _hex6Cache.get(v);
+  let out='#000000';
+  try{
+    const ctx=document.createElement('canvas').getContext('2d');
+    ctx.fillStyle='#000'; ctx.fillStyle=v; const r=String(ctx.fillStyle);
+    if(/^#[0-9a-f]{6}$/i.test(r)) out=r;
+    else { const m=r.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/); if(m) out='#'+[m[1],m[2],m[3]].map(x=>(+x).toString(16).padStart(2,'0')).join(''); }
+  }catch(e){}
+  if(_hex6Cache.size>200) _hex6Cache.clear();
+  _hex6Cache.set(v,out); return out;
+}
 function shade(hex,amt){
-  const n=parseInt(hex.slice(1),16);
+  const n=parseInt(hex6(hex).slice(1),16);
   let r=(n>>16)+amt,g=((n>>8)&255)+amt,b=(n&255)+amt;
   r=Math.max(0,Math.min(255,r));g=Math.max(0,Math.min(255,g));b=Math.max(0,Math.min(255,b));
   return '#'+((r<<16)|(g<<8)|b).toString(16).padStart(6,'0');
@@ -2346,7 +2434,7 @@ function shade(hex,amt){
 // sRGB lerp between two #rrggbb hexes by t (0..1) - mirrors the zebra tint's
 // color-mix(in srgb, ...) so the PNG export matches the on-screen striping.
 function mixHex(a,b,t){
-  const pa=parseInt(a.slice(1),16), pb=parseInt(b.slice(1),16);
+  const pa=parseInt(hex6(a).slice(1),16), pb=parseInt(hex6(b).slice(1),16);
   const r=Math.round(((pa>>16)&255)*(1-t)+((pb>>16)&255)*t);
   const g=Math.round(((pa>>8)&255)*(1-t)+((pb>>8)&255)*t);
   const bl=Math.round((pa&255)*(1-t)+(pb&255)*t);
@@ -2367,6 +2455,11 @@ function drawEdges(hidden){
   const style=resolvedMapStyle(map);
   const layout=map.layout||'balanced';
   const segs=[];
+  // Stroke settings per style: colour and width ride the --edge-color and
+  // --edge-width CSS vars applyStyleConfigVars() sets on #viewport; the dash comes
+  // from the style config. Resolved once per pass - it was rebuilt for every edge.
+  const _sc = { ...STYLE_CONFIG_DEFAULTS[style], ...((map.styleConfig || {})[style] || {}) };
+  const _edgeDash = _sc.dash > 0 ? `${_sc.dash} ${Math.max(2, Math.round(_sc.dash * 0.7))}` : null;
   for(const id in map.nodes){
     const n=map.nodes[id]; if(!n.parent||hidden.has(id)||hidden.has(n.parent)) continue;
     const p=map.nodes[n.parent]; if(!p) continue;
@@ -2447,10 +2540,7 @@ function drawEdges(hidden){
     // to the old one-element output for those styles. The style config feeds
     // the dashes here; width and colour ride the --edge-width/--edge-color
     // CSS vars applyStyleConfigVars() sets on #viewport.
-    let color=null, width=null, dash=null;
-    const _sc = { ...STYLE_CONFIG_DEFAULTS[style], ...((map.styleConfig || {})[style] || {}) };
-    if(_sc.dash > 0) dash = `${_sc.dash} ${Math.max(2, Math.round(_sc.dash * 0.7))}`;
-    segs.push({d, color, width, dash});
+    segs.push({d, color:null, width:null, dash:_edgeDash});
   }
   // Merge segments sharing stroke settings into one path element each, so a
   // plain map stays a single <path> and only styles that vary (dashed: dash
@@ -2617,15 +2707,17 @@ function countDesc(id){let c=0;const walk=i=>childrenOf(i).forEach(k=>{c++;walk(
 // made a full render O(n²) - the real cost when expanding a large map.
 function computeRollups(){
   const desc=Object.create(null), tdone=Object.create(null), ttot=Object.create(null);
-  const order=[]; const stack=[map.rootId];
-  while(stack.length){ const id=stack.pop(); order.push(id); const ks=childrenOf(id); for(let j=0;j<ks.length;j++) stack.push(ks[j]); }
+  // `seen` is belt and braces: repairTree() keeps loops out of a map, but a walk
+  // that met one anyway must end rather than grow its stack until the tab dies.
+  const order=[]; const stack=[map.rootId]; const seen=new Set();
+  while(stack.length){ const id=stack.pop(); if(seen.has(id)) continue; seen.add(id); order.push(id); const ks=childrenOf(id); for(let j=0;j<ks.length;j++) stack.push(ks[j]); }
   for(let i=order.length-1;i>=0;i--){
     const id=order[i]; let d=0,td=0,tt=0;
     const ks=childrenOf(id);
     for(let j=0;j<ks.length;j++){
-      const c=ks[j]; d+=desc[c]+1;
+      const c=ks[j]; d+=(desc[c]||0)+1;
       const t=map.nodes[c].task;
-      tt+=ttot[c]+(t?1:0); td+=tdone[c]+(t==='done'?1:0);
+      tt+=(ttot[c]||0)+(t?1:0); td+=(tdone[c]||0)+(t==='done'?1:0);
     }
     desc[id]=d; tdone[id]=td; ttot[id]=tt;
   }
@@ -2637,7 +2729,9 @@ function hiddenSet(){
   // one locally so this is always O(n), never O(n²) (it's also called by
   // fit/recenter/exportPNG/minimap, which run outside the render scope).
   const idx=_ci || buildChildIndex();
+  const seen=new Set();   // a loop can never recurse forever (see repairTree)
   const walk=(id, hide)=>{
+    if(seen.has(id)) return; seen.add(id);
     const newHide = hide || !!map.nodes[id]?.collapsed;
     const kids=idx[id]; if(!kids) return;
     for(const c of kids){ if(newHide) h.add(c); walk(c, newHide); }
@@ -3398,12 +3492,18 @@ function layoutTree(nodes, rootId, kidsOf, opts){
   const getMain = n => horiz ? n.x : n.y;
 
   // Cross-axis extent of a subtree: siblings stack along this axis, so it is
-  // the sum of their extents, floored at the node's own size.
+  // the sum of their extents, floored at the node's own size. Memoised for the
+  // pass (sizes cannot change mid-layout): place() asks for every node's extent
+  // again at every level, which was O(n x depth) - quadratic on a deep outline.
+  const extentCache = new Map();
   const extent = id => {
+    if(extentCache.has(id)) return extentCache.get(id);
     const n = nodes[id], cs = kidsOf(id);
-    if(!cs.length || n.collapsed) return crossSize(n);
-    let s = 0; cs.forEach((c,i)=>{ s += extent(c) + (i ? gapCross : 0); });
-    return Math.max(crossSize(n), s);
+    let v;
+    if(!cs.length || n.collapsed) v = crossSize(n);
+    else { let s = 0; cs.forEach((c,i)=>{ s += extent(c) + (i ? gapCross : 0); }); v = Math.max(crossSize(n), s); }
+    extentCache.set(id, v);
+    return v;
   };
   // Place a node centred within its own subtree extent, then lay out children.
   const place = (id, main, crossTop, dir) => {
@@ -3743,7 +3843,7 @@ function renderMdList(items, itemFn){
 // mdToHtml() for the Markdown preview and PDF export - NOT by the parser: node text must keep
 // math as literal $...$ source (see htmlToInlineMd's comment) so it stays editable/round-trips.
 function mdInlineToHtmlWithMath(txt){
-  if(!txt || txt.indexOf('$')<0) return mdInlineToHtml(txt);
+  if(!txt || txt.indexOf('$')<0) return mdInlineToHtml(txt, true);
   const re=new RegExp(MATH_DELIM_RE.source,'g');
   const slots=[];
   const masked = txt.replace(re, (full,dd,inl)=>{
@@ -3752,7 +3852,38 @@ function mdInlineToHtmlWithMath(txt){
     slots.push(mathml!=null ? mathml : escapeHtml(full));   // fall back to the raw text if it doesn't parse as LaTeX
     return '\uE000'+(slots.length-1)+'\uE001';               // PUA placeholder survives markdown/HTML processing untouched
   });
-  return mdInlineToHtml(masked).replace(/\uE000(\d+)\uE001/g, (m,idx)=> slots[+idx]!=null ? slots[+idx] : '');
+  return mdInlineToHtml(masked, true).replace(/\uE000(\d+)\uE001/g, (m,idx)=> slots[+idx]!=null ? slots[+idx] : '');
+}
+// A raw HTML block in the preview (a table, <details>, a figure) is passed
+// through, so it is scrubbed first. This is text-level work because mdToHtml
+// has to run without a DOM, and it errs towards breaking markup: an event
+// handler goes whatever precedes it (a quote or a slash ends the previous
+// attribute just as a space does - <img src="x"onerror=...> is live HTML), and
+// a URL attribute is neutralised when, once entities and whitespace are taken
+// out, it names a scheme that can run script.
+function scrubRawHtmlBlock(html){
+  let s = String(html).replace(/<\/?(script|style|iframe|object|embed|link|meta|base|frame|frameset|animate\w*|set)\b[^>]*>/gi, '');   // SVG <animate>/<set> can write href="javascript:" with no on* handler
+  for(let prev = null; prev !== s; ){ prev = s; s = s.replace(/([\s"'\/])on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, '$1'); }
+  return s.replace(/([\s"'\/])((?:xlink:)?href|src|srcset|action|formaction|data|poster|background)\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, (all, pre, attr, val) => {
+    const v = val.replace(/^["']|["']$/g, '')
+      .replace(/&#(x[0-9a-f]+|\d+);?/gi, (e, c) => { const cp = /^x/i.test(c) ? parseInt(c.slice(1), 16) : parseInt(c, 10); return cp > 0 && cp < 0x110000 ? String.fromCodePoint(cp) : ''; })
+      .replace(/&(colon|tab|newline);/gi, (e, n) => n.toLowerCase() === 'colon' ? ':' : '')
+      .replace(/[\s\u0000-\u001f]+/g, '').toLowerCase();
+    const bad = /^(javascript|vbscript):/.test(v) || (/^data:/.test(v) && !/^data:image\//.test(v));
+    return bad ? pre + attr + '="#"' : all;
+  });
+}
+// Whether a Markdown link target may become an href: http(s), mailto, tel, or a
+// relative/fragment link. Decoded once and stripped of whitespace/control
+// characters first, the way a browser reads the attribute - so "java\tscript:"
+// is judged by what it actually is.
+function safeLinkHref(url){
+  const v=String(url)
+    .replace(/&#(x[0-9a-f]+|\d+);?/gi,(e,c)=>{ const cp=/^x/i.test(c)?parseInt(c.slice(1),16):parseInt(c,10); return cp>0&&cp<0x110000?String.fromCodePoint(cp):''; })
+    .replace(/&(amp|colon|tab|newline);/gi,(e,n)=>({amp:'&',colon:':'})[n.toLowerCase()]||'')
+    .replace(/[\s\u0000-\u001f]+/g,'').toLowerCase();
+  const m=v.match(/^([a-z][a-z0-9+.-]*):/);
+  return !m || ['http','https','mailto','tel'].includes(m[1]);
 }
 function mdToHtml(md){
   let frontHtml='';
@@ -3775,8 +3906,14 @@ function mdToHtml(md){
   while(i<L.length){
     let line=L[i];
     if(!line.trim()){ i++; continue; }
-    let fm=line.match(/^\s*(```+|~~~+)(.*)$/);
-    if(fm){ const buf=[]; let j=i+1; while(j<L.length && !/^\s*(```+|~~~+)\s*$/.test(L[j])){ buf.push(L[j]); j++; } out.push('<pre class="mp-code"><code>'+esc(buf.join('\n'))+'</code></pre>'); i=j+1; continue; }
+    // A fence carries its own indentation when it sits under a bullet, and that
+    // indentation is scaffolding, not content - strip it off every line the way
+    // parseMarkdownOutline does, or an indented ASCII diagram renders two
+    // columns further right than it was written.
+    let fm=line.match(/^(\s*)(```+|~~~+)(.*)$/);
+    if(fm){ const ind=fm[1], buf=[]; let j=i+1;
+      while(j<L.length && !/^\s*(```+|~~~+)\s*$/.test(L[j])){ buf.push(L[j].startsWith(ind)?L[j].slice(ind.length):L[j]); j++; }
+      out.push('<pre class="mp-code"><code>'+esc(buf.join('\n'))+'</code></pre>'); i=j+1; continue; }
     let h=line.match(/^(#{1,6})\s+(.*)$/);
     if(h){ out.push('<h'+h[1].length+'>'+mdInlineToHtmlWithMath(h[2])+'</h'+h[1].length+'>'); i++; continue; }
     if(/^\s*([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(line)){ out.push('<hr>'); i++; continue; }
@@ -3785,15 +3922,23 @@ function mdToHtml(md){
     if(/^\s*<(table|div|details|figure|section|img|hr|blockquote|p|h[1-6]|ul|ol)\b/i.test(line)){ const tm=line.match(/^\s*<([a-z0-9]+)/i), tag=tm?tm[1].toLowerCase():''; const buf=[line];
       const VOID=/^(img|hr|br|input|source|col|area|embed|track|wbr|link|meta)$/;
       if(tag && !VOID.test(tag) && !new RegExp('</'+tag+'>','i').test(line) && !/\/>\s*$/.test(line)){ let j=i+1, found=false; while(j<L.length){ buf.push(L[j]); if(new RegExp('</'+tag+'>','i').test(L[j])){ found=true; j++; break; } j++; } if(found){ i=j; } else { buf.length=1; i++; } } else i++;
-      out.push(buf.join('\n').replace(/<\/?(script|style|iframe|object|embed|link|meta)\b[^>]*>/gi,'').replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi,'').replace(/\b(href|src)\s*=\s*("\s*javascript:[^"]*"|'\s*javascript:[^']*')/gi,'$1="#"')); continue; }
+      out.push(scrubRawHtmlBlock(buf.join('\n'))); continue; }
     let im=line.match(/^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$/);
     if(im){ out.push('<img alt="'+esc(im[1])+'" src="'+esc(im[2])+'">'); i++; continue; }
-    if(/^\s*([-*+]|\d+\.)\s+/.test(line)){ const items=[]; while(i<L.length && (/^\s*([-*+]|\d+\.)\s+/.test(L[i]) || (L[i].trim() && /^\s{2,}\S/.test(L[i])))){ items.push(L[i]); i++; } out.push(renderMdList(items,item)); continue; }
+    // The continuation arm of this scan takes ANY line indented two spaces or
+    // more, which used to swallow a fenced code block nested under a bullet -
+    // every line of it, fences included, came back out as its own <li>. That is
+    // the exact shape buildMarkdown emits for a code node, so the preview
+    // mangled the app's own output while the canvas rendered the same block
+    // correctly. Stop the list at a fence and let the branch above take it on
+    // the next pass: the block lands after the list, which is already where the
+    // unindented and blank-line-separated spellings put it.
+    if(/^\s*([-*+]|\d+\.)\s+/.test(line)){ const items=[]; while(i<L.length && !/^\s*(```+|~~~+)/.test(L[i]) && (/^\s*([-*+]|\d+\.)\s+/.test(L[i]) || (L[i].trim() && /^\s{2,}\S/.test(L[i])))){ items.push(L[i]); i++; } out.push(renderMdList(items,item)); continue; }
     const buf=[line]; i++; while(i<L.length && L[i].trim() && !/^\s*(#{1,6}\s|[-*+]\s|\d+\.\s|>|```|~~~|\||<)/.test(L[i])){ buf.push(L[i]); i++; }
     out.push('<p>'+mdInlineToHtmlWithMath(buf.join(' '))+'</p>');
   }
   // final safety: strip event handlers / javascript: URLs
-  return out.join('\n').replace(/\son\w+="[^"]*"/gi,'').replace(/javascript:/gi,'');
+  return out.join('\n').replace(/\son\w+="[^"]*"/gi,'');   // links are scheme-checked where they are built (safeLinkHref); a global strip of "javascript:" was bypassable and corrupted ordinary text
 }
 function mdWrapSel(before, after){ const ed=document.getElementById('mdEditor'); if(!ed) return; const s=ed.selectionStart,e=ed.selectionEnd,sel=ed.value.slice(s,e);
   ed.value=ed.value.slice(0,s)+before+sel+after+ed.value.slice(e);
@@ -4246,6 +4391,53 @@ function mdAfterEdit(){
   clearTimeout(_mdTimer);
   _mdTimer=setTimeout(applyMdToMap, 300);
 }
+// Carry node identity across a Markdown edit. Children are paired parent by
+// parent: first by their text (metaFingerprint), then, among what is left, by
+// position - so an edited line keeps its id, an inserted one gets a fresh id and
+// a deleted one's id goes. A node moved under another parent is then found by its
+// text among the unpaired rest, when that text is unique on both sides.
+// Returns {nodes, rootId} with parsed nodes re-keyed; the input is not mutated.
+function carryMarkdownIds(oldNodes, oldRootId, parsed){
+  const kidsOf=nodes=>{ const k=Object.create(null); for(const id in nodes){ const p=nodes[id].parent; if(p!=null) (k[p]||(k[p]=[])).push(id); } return k; };
+  const oldKids=kidsOf(oldNodes), newKids=kidsOf(parsed.nodes);
+  const fp=t=>metaFingerprint(t);
+  const pair=new Map(), usedOld=new Set();
+  const walk=(newId, oldId)=>{
+    pair.set(newId, oldId); usedOld.add(oldId);
+    const nk=(newKids[newId]||[]).filter(id=>!pair.has(id));
+    const ok=(oldKids[oldId]||[]).filter(id=>!usedOld.has(id));
+    const chosen=new Array(nk.length).fill(null), taken=new Set();
+    nk.forEach((nid,i)=>{ const f=fp(parsed.nodes[nid].text); const hit=ok.find(o=>!taken.has(o) && fp(oldNodes[o].text)===f); if(hit){ taken.add(hit); chosen[i]=hit; } });
+    const rest=ok.filter(o=>!taken.has(o)); let r=0;
+    nk.forEach((nid,i)=>{ if(chosen[i]==null && r<rest.length) chosen[i]=rest[r++]; });
+    nk.forEach((nid,i)=>{ if(chosen[i]!=null && !usedOld.has(chosen[i])) walk(nid, chosen[i]); });
+  };
+  if(parsed.rootId && parsed.nodes[parsed.rootId] && oldRootId && oldNodes[oldRootId]) walk(parsed.rootId, oldRootId);
+  // Moves: an unpaired node whose text is unique among the unpaired on both sides.
+  const count=(ids, nodes)=>{ const c=new Map(); ids.forEach(id=>{ const f=fp(nodes[id].text); c.set(f,(c.get(f)||0)+1); }); return c; };
+  const freeNew=Object.keys(parsed.nodes).filter(id=>!pair.has(id)), freeOld=Object.keys(oldNodes).filter(id=>!usedOld.has(id));
+  const cNew=count(freeNew, parsed.nodes), cOld=count(freeOld, oldNodes);
+  for(const nid of freeNew){
+    if(pair.has(nid)) continue;
+    const f=fp(parsed.nodes[nid].text);
+    if(cNew.get(f)!==1 || cOld.get(f)!==1) continue;
+    const oid=freeOld.find(o=>!usedOld.has(o) && fp(oldNodes[o].text)===f);
+    if(oid) walk(nid, oid);
+  }
+  const taken=new Set(pair.values()), final=new Map();
+  for(const nid of Object.keys(parsed.nodes)){
+    let id=pair.get(nid);
+    if(!id){ id=nid; while(taken.has(id) || oldNodes[id]) id=uid(); taken.add(id); }
+    final.set(nid, id);
+  }
+  const nodes={};
+  for(const nid of Object.keys(parsed.nodes)){
+    const n={ ...parsed.nodes[nid] }, id=final.get(nid);
+    n.id=id; n.parent = n.parent==null ? null : (final.get(n.parent) || null);
+    nodes[id]=n;
+  }
+  return { nodes, rootId: final.get(parsed.rootId) || parsed.rootId };
+}
 function applyMdToMap(){
   const ed=document.getElementById('mdEditor'); if(!ed||!mdMode) return;
   if(typeof READONLY!=='undefined' && READONLY) return;
@@ -4253,7 +4445,15 @@ function applyMdToMap(){
   if(!parsed||!parsed.rootId||!parsed.nodes||!parsed.nodes[parsed.rootId]) return;   // ignore un-parseable/empty text
   _mdSyncing=true;
   sel=null; document.querySelectorAll('.node.sel').forEach(n=>n.classList.remove('sel')); document.getElementById('nodebar')?.remove();
-  map.nodes=parsed.nodes; map.rootId=parsed.rootId;
+  // The parser hands out fresh ids on every pass. Keep the ids of the nodes the
+  // user did not delete, so cross-links (and a live session's per-node ops) still
+  // point at them - replacing map.nodes wholesale orphaned every cross-link, and
+  // the next load pruned them.
+  const kept=carryMarkdownIds(map.nodes, map.rootId, parsed);
+  for(const id in kept.nodes) sanitizeNodeFields(kept.nodes[id]);   // the editor text is as untrusted as a file
+  map.nodes=kept.nodes; map.rootId=kept.rootId;
+  repairTree(map);
+  map.links=(map.links||[]).filter(l=>map.nodes[l.from] && map.nodes[l.to]);
   if(typeof balanceRootSides==='function') balanceRootSides();
   autoLayout(); pushHistory();   // undoable + persists (guarded so it won't clobber the editor)
   _mdSyncing=false;
@@ -4397,7 +4597,7 @@ function placeNewNodeNear(id){
   }
 }
 function deleteNode(id){
-  if(id===map.rootId) return;
+  if(READONLY || id===map.rootId) return;
   const rm=[id]; const walk=i=>childrenOf(i).forEach(c=>{rm.push(c);walk(c)}); walk(id);
   const parent=map.nodes[id].parent;
   rm.forEach(r=>delete map.nodes[r]);
@@ -4622,7 +4822,7 @@ function bulkReparent(targetId){
    ============================================================ */
 let linkMode = false, linkSource = null;
 function startLinkMode(sourceId){
-  if(!sourceId){ return; }
+  if(!sourceId || READONLY){ return; }
   linkMode = true; linkSource = sourceId;
   document.querySelector(`.node[data-id="${sourceId}"]`)?.classList.add('link-source');
   toast('Link mode - click another node (Esc to cancel)');
@@ -4634,6 +4834,7 @@ function cancelLinkMode(){
 function completeLink(targetId){
   const from = linkSource;
   cancelLinkMode();
+  if(READONLY) return;
   if(!from || !targetId || from===targetId) return;
   if(!map.links) map.links = [];
   // Toggle: if this exact link already exists (either direction), remove it
@@ -4724,7 +4925,7 @@ function setMarker(id, ch){
   pushHistory(); render(); autoLayout();
 }
 function cycleTask(id){
-  const n=map.nodes[id]; if(!n) return;
+  const n=map.nodes[id]; if(!n || READONLY) return;
   const order=[null,'todo','doing','done'];
   const cur=order.indexOf(n.task||null);
   const next=order[(cur+1)%order.length];
@@ -5082,6 +5283,14 @@ function showCitationForm(id){
   m.querySelectorAll('.vf-input').forEach(ta=>{ const g=()=>{ta.style.height='auto';ta.style.height=Math.min(ta.scrollHeight,120)+'px';}; ta.addEventListener('input',g); g(); });
   m.querySelector('.vf-input')?.focus();
   const close=()=>m.remove();
+  // A read-only map shows the reference; it does not let it be changed.
+  if(READONLY){
+    m.querySelectorAll('.vf-input').forEach(ta=>{ ta.readOnly=true; });
+    m.querySelectorAll('.vf-doi-lookup,.vf-go,.vf-unref').forEach(el=>el.remove());
+    const cb=m.querySelector('.vf-cancel'); if(cb) cb.textContent='Close';
+    dismissOn(close);
+    return;
+  }
   // DOI → Crossref autofill
   const doiGo=m.querySelector('.vf-doi-go'), doiIn=m.querySelector('.vf-doi-in');
   const setField=(f,val)=>{ const ta=m.querySelector(`.vf-input[data-f="${f}"]`); if(ta && val){ ta.value=val; ta.dispatchEvent(new Event('input')); } };
@@ -5140,20 +5349,34 @@ function attachImageToNode(id){
   inp.onchange=()=>{ const f=inp.files[0]; if(f) readImageFile(f,id); };
   inp.click();
 }
+// Whether any pixel of the drawn image is not fully opaque.
+function imageHasAlpha(ctx, w, h){
+  try{
+    const d=ctx.getImageData(0,0,w,h).data;
+    for(let i=3;i<d.length;i+=4) if(d[i]<255) return true;
+  }catch(e){}
+  return false;
+}
 function readImageFile(file,id){
   if(!file.type.startsWith('image/')){ toast('Not an image file'); return; }
+  const target=map;   // the image belongs to the node on THIS map, even if loading takes a while
   const reader=new FileReader();
   reader.onload=()=>{
     const img=new Image();
     img.onload=()=>{
       // Down-scale to a sane max so the data-URL stays small (esp. for cloud/GitHub storage)
+      if(map!==target || !map.nodes[id]){ toast('The map changed before the image finished loading - attach it again'); return; }
       const MAX=360;
       let w=img.width,h=img.height;
       if(w>MAX){ h=Math.round(h*MAX/w); w=MAX; }
+      if(h>MAX*2){ w=Math.max(1,Math.round(w*MAX*2/h)); h=MAX*2; }   // a very tall image is capped too
       const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
-      cv.getContext('2d').drawImage(img,0,0,w,h);
+      const cx=cv.getContext('2d');
+      cx.drawImage(img,0,0,w,h);
+      // JPEG has no alpha: re-encoding a transparent PNG, GIF or WebP as JPEG
+      // turned every transparent pixel black. Keep PNG when there is any.
       let data;
-      try{ data=cv.toDataURL('image/jpeg',0.82); }catch(e){ data=reader.result; }
+      try{ data=cv.toDataURL(imageHasAlpha(cx,w,h) ? 'image/png' : 'image/jpeg', 0.82); }catch(e){ data=reader.result; }
       map.nodes[id].image=data;
       // autoLayout(), not just render(): the node grows to fit the image, and
       // its neighbours' positions were computed for the old, smaller size -
@@ -5254,6 +5477,10 @@ if(stage){
 
 window.addEventListener('paste', e => {
   if(READONLY) return;
+  // A paste into the search box, the Markdown editor or a dialog's text field is
+  // that field's business - it used to attach the image to the selected node.
+  const tg=e.target && e.target.tagName;
+  if(tg==='INPUT' || tg==='TEXTAREA') return;
   const file = firstImageFile(e.clipboardData);
   if(!file) return;                       // ordinary text paste - leave it alone
 
@@ -5278,6 +5505,14 @@ window.addEventListener('paste', e => {
 /* ============================================================
    SEARCH ACROSS ALL MAPS
    ============================================================ */
+// What cross-map search keeps of each map it has read: the searchable text only,
+// keyed by the map's "updated" stamp. It used to download every map from the
+// forge again on every query (6 at a time), which in cloud mode burned the
+// hourly API budget in a few searches.
+const _searchCache=new Map();   // map id -> {updated, id, title, rows:[{id, plain, notes}]}
+function _searchRows(m){
+  return Object.values(m.nodes||{}).map(n=>({ id:n.id, plain:nodeTextPlain(n.text||''), notes:(n.notes||'').replace(/<[^>]*>/g,' ') }));
+}
 async function searchAllMaps(query){
   const q=(query||'').trim().toLowerCase();
   if(!q) return [];
@@ -5290,20 +5525,26 @@ async function searchAllMaps(query){
     const batch = idx.slice(i, i+CONCURRENCY);
     const maps = await Promise.all(batch.map(async meta=>{
       try{
-        const m = (meta.id===(map&&map.id)) ? map : await Store.get(meta.id);
-        return m && m.nodes ? m : null;
+        if(map && meta.id===map.id) return { id:map.id, title:map.title, rows:_searchRows(map) };   // the open map: always live
+        const hit=_searchCache.get(meta.id);
+        if(hit && meta.updated && hit.updated===meta.updated) return hit;
+        const m = await Store.get(meta.id);
+        if(!(m && m.nodes)) return null;
+        const e={ id:m.id||meta.id, title:m.title, updated:meta.updated, rows:_searchRows(m) };
+        if(_searchCache.size>=500) _searchCache.clear();
+        _searchCache.set(meta.id, e);
+        return e;
       }catch(e){ return null; }
     }));
     for(const m of maps){
       if(!m) continue;
-      for(const n of Object.values(m.nodes)){
-        const plain=nodeTextPlain(n.text||'').toLowerCase();
-        const notes=(n.notes||'').replace(/<[^>]*>/g,' ').toLowerCase();
+      for(const r of m.rows){
+        const plain=r.plain.toLowerCase(), notes=r.notes.toLowerCase();
         if(plain.includes(q) || notes.includes(q)){
-          const src=plain.includes(q)?nodeTextPlain(n.text||''):(n.notes||'').replace(/<[^>]*>/g,' ');
+          const src=plain.includes(q)?r.plain:r.notes;
           const at=src.toLowerCase().indexOf(q);
           const snippet=(at>30?'…':'')+src.slice(Math.max(0,at-30), at+q.length+40).trim()+'…';
-          results.push({ mapId:m.id, mapTitle:m.title||'Untitled', nodeId:n.id, snippet });
+          results.push({ mapId:m.id, mapTitle:m.title||'Untitled', nodeId:r.id, snippet });
           if(results.length>=200) return results;
         }
       }
@@ -5439,6 +5680,7 @@ function startBlockEdit(id, el){
       if(!html || !html.replace(/<[^>]+>/g,'').trim()) html=original;   // never allow it to be emptied
       map.nodes[id].html=html; pushHistory();
     }
+    _nodeSig.delete(id);   // rebuild from n.html even when nothing changed (Escape), dropping the edited DOM
     autoLayout();   // re-renders the node fresh from n.html (drops contentEditable cruft)
   };
   const onBlur=()=>finish(true);
@@ -5547,13 +5789,13 @@ function formulaAutocompleteKeydown(e){
   if(e.key==='Escape'){ closeFormulaAutocomplete(); return true; }
   return false;
 }
-function startEdit(id){
+function startEdit(id, seed){
   if(READONLY) return;
   if(map.nodes[id] && map.nodes[id].hr) return;   // dividers aren't editable
   const el=document.querySelector(`.node[data-id="${id}"]`); if(!el) return;
   if(map.nodes[id] && map.nodes[id].html){ startBlockEdit(id, el); return; }   // edit code/table in place
   const textEl=el.querySelector('.node-text')||el;
-  const raw = map.nodes[id]?.text || '';
+  const raw = seed!=null ? String(seed) : (map.nodes[id]?.text || '');
   // Preserve any inline formatting (bold/italic/etc.) for the user to edit
   if(INLINE_HTML_RE.test(raw)) textEl.innerHTML = sanitizeInlineHTML(raw);
   else textEl.textContent = raw;
@@ -5613,6 +5855,10 @@ function startEdit(id){
     // laid out after editing - mirrors GitMind, which keeps the map tidy both
     // during and after typing. autoLayout() re-renders internally.
     if(_editRAF){ cancelAnimationFrame(_editRAF); _editRAF=0; }
+    // Rebuild the element from the model. Editing rewrote its DOM (raw formula,
+    // raw HTML, image markdown); after Escape nothing in the node changed, so
+    // render() kept that element and a formula showed "=1+2", rich text its tags.
+    _nodeSig.delete(id);
     autoLayout();
   };
   const onBlur=()=>finish(true);
@@ -5939,21 +6185,24 @@ function applySubtreeDelta(start, dx, dy){
     const base = start.subtree[id];
     const n = map.nodes[id]; if(!n) continue;
     n.x = base.x + dx; n.y = base.y + dy;
-    const el = document.querySelector(`.node[data-id="${id}"]`);
+    // _nodeEls is render()'s own id -> element map: O(1), where a selector per
+    // node per frame scanned the DOM and made big-subtree drags stutter.
+    const el = _nodeEls.get(id) || document.querySelector(`.node[data-id="${id}"]`);
     if(el){ el.style.left = n.x+'px'; el.style.top = n.y+'px'; }
   }
 }
 
 // Used by render() to attach mousedown to the resize grip
 function startResize(id, ev){
+  if(READONLY) return;
   const n=map.nodes[id];
   _rzCache=null;   // re-measure fresh - a stale factor here would throw off every dx/dy for the whole gesture
   resizing={id, sx:ev.clientX, sy:ev.clientY, sw:n.width||n.w||120, sh:n.height||n.h||40};
 }
 // Walks up parents; true if `id` is a descendant of `ancestorId` (or equal)
 function isDescendant(id, ancestorId){
-  let cur=id;
-  while(cur){ if(cur===ancestorId) return true; cur=map.nodes[cur]?.parent; }
+  let cur=id; const seen=new Set();
+  while(cur && !seen.has(cur)){ if(cur===ancestorId) return true; seen.add(cur); cur=map.nodes[cur]?.parent; }
   return false;
 }
 // Find the node under (x,y) that's a valid drop target for the currently-dragged node.
@@ -6107,9 +6356,10 @@ stage.addEventListener('mousedown',e=>{
       bulkReparent(id);
       return;
     }
-    // Shift-click toggles multi-selection (no drag, keep primary sel intact)
+    // Shift-click toggles multi-selection (no drag, keep primary sel intact).
+    // Not in a read-only view: the bulk bar it opens deletes and restyles.
     if(e.shiftKey){
-      toggleMultiSelect(id);
+      if(!READONLY) toggleMultiSelect(id);
       return;
     }
     // Normal click clears any multi-selection
@@ -6255,6 +6505,7 @@ stage.addEventListener('touchstart', e=>{
     const id=nodeEl.dataset.id;
     select(id,false);
     panning=false;                       // drop any stale pan state from an interrupted gesture
+    if(READONLY){ dragNode=null; return; }   // a read-only view can be looked at, not rearranged
     dragNode=id; moved=false;
     // Defer the subtree walk until the finger actually moves, so a plain tap stays
     // instant even on a large map. (The mouse path does the same; walking eagerly on
@@ -6346,7 +6597,10 @@ stage.addEventListener('wheel',e=>{
   const p=_stagePoint(e.clientX, e.clientY);
   const px=p.x, py=p.y;
   const old=view.k;
-  const k=Math.min(3,Math.max(.1, view.k*(e.deltaY<0?1.12:.89)));
+  // Proportional to the wheel's travel: a mouse notch (~100px) still zooms ~12%,
+  // but a trackpad's stream of tiny deltas no longer zooms 12% per event.
+  const dy = e.deltaMode===1 ? e.deltaY*16 : e.deltaMode===2 ? e.deltaY*400 : e.deltaY;
+  const k=Math.min(3,Math.max(.1, view.k*Math.exp(-Math.max(-300,Math.min(300,dy))*0.00113)));
   view.x=px-(px-view.x)*(k/old); view.y=py-(py-view.y)*(k/old); view.k=k; userZoom=k;
   applyView(); saveMapView();
 },{passive:false});
@@ -6497,6 +6751,10 @@ window.addEventListener('keydown',e=>{
   // ime-exempt: bails on every text field, contentEditable and open editor
   // below, so a composition is never live by the time a key test is reached.
   if(['INPUT','TEXTAREA'].includes(e.target.tagName)||e.target.isContentEditable||document.querySelector('.node.editing')) return;
+  // A read-only view (a shared link, a version preview) answers to navigation and
+  // folding only: Delete removed subtrees, a letter replaced a node's text and L
+  // added cross-links there - all of it carried into "Make an editable copy".
+  if(READONLY && !['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' ','Escape'].includes(e.key)) return;
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?redo():undo();return;}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){e.preventDefault();redo();return;}
   if(!sel||!map) return;
@@ -6519,13 +6777,13 @@ window.addEventListener('keydown',e=>{
     e.preventDefault();
     cancelLinkMode();
   }
+  else if(e.key==='?'){ /* the shortcuts help owns '?' (listener further down) */ }
   else if(e.key.length===1&&!e.ctrlKey&&!e.metaKey){
-    // Replace mode: set the text to the typed key and enter edit with cursor at end.
+    // Replace mode: edit with the typed key as the starting text, cursor at end.
+    // The key seeds the EDITOR only: writing it into the model first meant Escape
+    // could not bring the old text back, and the next autosave stored the key.
     e.preventDefault();
-    map.nodes[sel].text=e.key;
-    const tEl=document.querySelector(`.node[data-id="${sel}"] .node-text`);
-    if(tEl) tEl.textContent=e.key;
-    startEdit(sel);
+    startEdit(sel, e.key);
     requestAnimationFrame(()=>{
       const t2=document.querySelector(`.node[data-id="${sel}"] .node-text`);
       if(!t2) return;
@@ -6940,7 +7198,7 @@ async function refreshList(){
       const badge = sm.mine
         ? '<span class="shared-badge" title="Shared by you">\uD83D\uDD17</span>'
         : '<span class="shared-badge" title="'+(sm.token?'Shared with you \u00b7 editable':'Shared with you \u00b7 view only')+'">'+(sm.token?'\u270F\uFE0F':'\uD83D\uDC41')+'</span>';
-      el.innerHTML='<span class="dot" style="background:'+(sm.color||'#e0613a')+'"></span>'+
+      el.innerHTML='<span class="dot" style="background:'+escapeHtml(safeColor(sm.color)||'#e0613a')+'"></span>'+
         '<span class="nm">'+escapeHtml(sm.title||'Shared map')+'</span>'+badge+
         '<button class="row-menu" title="More" aria-haspopup="true" aria-label="More actions">\u22ee</button>';
       el.style.cursor='pointer';
@@ -7007,6 +7265,14 @@ function showNotesEditor(nodeId){
   const editor=popup.querySelector('.np-editor');
   editor.innerHTML = sanitizeNotes(n.notes||'');   // safe: inert-parsed, whitelisted
   npRenderAll(editor);                              // saved $...$ shows rendered from the start
+  // A read-only map shows its notes but does not let them be edited or saved.
+  const _ro = READONLY;
+  if(_ro){
+    editor.contentEditable='false';
+    popup.querySelector('.np-toolbar').style.display='none';
+    popup.querySelectorAll('.np-save,.np-clear').forEach(b=>b.remove());
+    const cb=popup.querySelector('.np-cancel'); if(cb) cb.textContent='Close';
+  }
   // Math renders in place as it is typed (see npRenderAtCaret). A formula the
   // user opened for editing (click, or Backspace onto it) is the one text node
   // the caret is in; it renders again once the caret leaves it.
@@ -7014,7 +7280,7 @@ function showNotesEditor(nodeId){
   // Not after undo/redo: Ctrl+Z on a fresh formula gives its source back, and
   // rendering that again at once would make the undo impossible to see.
   editor.addEventListener('input', e=>{ if(!e.isComposing && !/^history/.test(e.inputType||'')) setTimeout(()=>npRenderAtCaret(editor), 0); });
-  editor.addEventListener('click', e=>{ const sp=e.target.closest('.np-math'); if(sp && editor.contains(sp)){ e.preventDefault(); editingNode=npUnrender(sp); } });
+  editor.addEventListener('click', e=>{ const sp=e.target.closest('.np-math'); if(sp && !_ro && editor.contains(sp)){ e.preventDefault(); editingNode=npUnrender(sp); } });
   const onSel=()=>{
     if(!editingNode || !editingNode.parentNode) return;
     const sel=getSelection();
@@ -7051,7 +7317,7 @@ function showNotesEditor(nodeId){
     if(plain) map.nodes[nodeId].notes=html; else delete map.nodes[nodeId].notes;
     pushHistory(); render(); close();
   };
-  popup.querySelector('.np-save').onclick=save;
+  const _saveBtn=popup.querySelector('.np-save'); if(_saveBtn) _saveBtn.onclick=save;
   popup.querySelector('.np-cancel').onclick=close;
   popup.querySelector('.np-clear')?.addEventListener('click',()=>{
     delete map.nodes[nodeId].notes; pushHistory(); render(); close();
@@ -7060,6 +7326,7 @@ function showNotesEditor(nodeId){
     e.stopPropagation();
     if(isComposingKey(e)) return;
     if(e.key==='Escape'){ e.preventDefault(); close(); }
+    if(_ro) return;
     if(e.key==='Enter' && (e.ctrlKey||e.metaKey)){ e.preventDefault(); save(); }
     // Backspace onto a formula reopens its source rather than deleting it whole.
     if(e.key==='Backspace'){ const sp=npSpanBeforeCaret(editor); if(sp){ e.preventDefault(); editingNode=npUnrender(sp); } }
@@ -7073,6 +7340,11 @@ function showNotesEditor(nodeId){
    ============================================================ */
 async function createMapFromTemplate(templateId){
   if(!leaveLiveForSwitch()) return;
+  // Same hand-off as createMap(): without the flush, the new map's first save
+  // cancelled the outgoing map's pending one, and its last edit was lost.
+  endHistoryPreview(false);
+  exitSharedMode();
+  flushPendingSave();
   const tpl = TEMPLATES[templateId];
   if(!tpl){ createMap(); return; }
   const id = uid();
@@ -7125,7 +7397,9 @@ async function duplicateMap(id){
   let src = (map && map.id===id) ? map : null;
   if(!src){ try{ src = await Store.get(id); }catch(e){} }
   if(!src){ toast('Could not duplicate'); return; }
-  const copy = JSON.parse(JSON.stringify(src));
+  // A copy is a new map: it must not inherit the original's share room or edit
+  // token, or publishing it would overwrite the original's shared copy.
+  const copy = stripRuntimeFields(JSON.parse(JSON.stringify(src)));
   copy.id = uid();
   copy.title = (src.title||'Untitled') + ' (copy)';
   copy.titleAuto = false;
@@ -7224,7 +7498,7 @@ function showTemplatesMenu(){
       ${TEMPLATE_CATEGORIES.map(c=>{
         const count = Object.values(TEMPLATES).filter(t=>(t.group||'prompt')===c.id).length;
         return `<button class="tpl-item tpl-cat" data-cat="${c.id}">
-            <span class="tpl-ic" style="background:${c.color}">${c.icon}</span>
+            <span class="tpl-ic" style="background:${escapeHtml(c.color||"")}">${escapeHtml(c.icon||"")}</span>
             <span><b>${escapeHtml(c.label)}</b><i>${count} template${count===1?'':'s'}</i></span>
             <span class="tpl-chev">›</span>
           </button>`;
@@ -7243,7 +7517,7 @@ function showTemplatesMenu(){
       <div class="tpl-head" style="padding-top:2px">${escapeHtml(cat.label)}</div>
       ${entries.map(([id,t])=>`
         <button class="tpl-item" data-id="${id}">
-          <span class="tpl-ic" style="background:${t.color}">${t.icon || '?'}</span>
+          <span class="tpl-ic" style="background:${escapeHtml(safeColor(t.color)||"#8a8175")}">${escapeHtml(t.icon || "?")}</span>
           <span><b>${escapeHtml(t.name)}</b><i>${escapeHtml(t.desc)}</i></span>
           ${t._user?`<span class="tpl-del" data-del="${id}" title="Delete template">×</span>`:''}
         </button>`).join('')}`;
@@ -7268,6 +7542,7 @@ function showTemplatesMenu(){
 }
 function createMap(){
   if(!leaveLiveForSwitch()) return;
+  endHistoryPreview(false);
   exitSharedMode();
   const id=uid(); const rid=uid();
   const rootText='Central Idea';
@@ -7292,6 +7567,7 @@ function createMap(){
 }
 async function loadMap(id){
   if(!leaveLiveForSwitch()) return;
+  endHistoryPreview(false);
   exitSharedMode();            // if we were viewing a shared map, leave it cleanly
   let m=null;
   try{ m=await Store.get(id); }catch(e){ toast('Could not load map'); return false; }
@@ -7339,6 +7615,8 @@ $('#mapTitle').addEventListener('input',e=>{
 /* ---------- autosave ---------- */
 function scheduleSave(){
   if(!map || READONLY || map._ephemeral) return;   // live-session guest map is not persisted to a repo
+  // A version being previewed from history is not the map: nothing it shows may be saved.
+  if(typeof _historyPreview!=='undefined' && _historyPreview && _historyPreview.preview===map) return;
   if(map._cloudEdit){ scheduleCloudSave(); return; }   // shared cloud map saves back to the Durable Object
   const target = map;          // bind THIS map: switching maps before the timer
   _pendingSaveMap = target;    // fires must NOT redirect the write onto another map
@@ -7346,42 +7624,79 @@ function scheduleSave(){
   clearTimeout(saveTimer);
   // Cloud mode talks to a forge API - debounce longer to stay well under GitHub's 5000 req/h
   const delay = (MODE==='cloud') ? 1500 : 600;
-  saveTimer=setTimeout(async()=>{
-    saveTimer=null;
-    try{
-      await Store.save(target);
-      if(_pendingSaveMap===target) _pendingSaveMap=null;
-      $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved';
-    }catch(e){
-      // A conflict is not a hiccup: the map was changed elsewhere and a retry
-      // would overwrite that. The store has adopted the server's version, so
-      // the user's NEXT save goes through - and they have been told it will.
-      if(e && e.conflict){
-        $('#savePill').classList.remove('saving'); $('#saveText').textContent='Conflict';
-        toast(e.message); return;
-      }
+  saveTimer=setTimeout(()=>{ saveTimer=null; return _runSave(target); },delay);
+}
+// One save per map at a time. An edit made while a save of the same map was still
+// on the wire used to start a second, overlapping save that carried the version the
+// first was about to replace: on GitLab it came back as "changed elsewhere" for the
+// user's own edit, which then stayed unsaved. Now the second request waits, and runs
+// once - with the latest content - when the first has landed.
+const _saveRuns=new WeakMap();   // map object -> {running, again}
+function _saveRunning(target){ const st=_saveRuns.get(target); return !!(st && st.running); }
+let _savesInFlight=0;            // any save on the wire (read by the unload guard)
+async function _runSave(target, retried){
+  let st=_saveRuns.get(target); if(!st){ st={running:false, again:false}; _saveRuns.set(target, st); }
+  if(st.running){ st.again=true; return; }
+  st.running=true; _savesInFlight++;
+  let retry=false;
+  try{
+    await Store.save(target);
+    if(_pendingSaveMap===target) _pendingSaveMap=null;
+    if(!st.again){ $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved'; }
+  }catch(e){
+    // A conflict is not a hiccup: the map was changed elsewhere and a retry
+    // would overwrite that. The store has adopted the server's version, so
+    // the user's NEXT save goes through - and they have been told it will.
+    if(e && e.conflict){
+      $('#savePill').classList.remove('saving'); $('#saveText').textContent='Conflict';
+      toast(e.message);
+    } else if(!retried){
       $('#savePill').classList.remove('saving'); $('#saveText').textContent='Retrying…';
-      // The map was copied to local storage before the network write, so the
-      // edit isn't lost. Tell the user plainly and retry once after a short wait.
+      // Cloud mode copied the map to local storage before the network write, so
+      // the edit isn't lost there. The server has no such copy - say so honestly.
       toast((MODE==='cloud')
         ? 'Couldn’t sync to '+forgeName()+' just now - your changes are saved on this device and will retry.'
-        : 'Couldn’t reach the server - your changes are saved on this device and will retry.');
-      setTimeout(async()=>{
-        try{ await Store.save(target); if(_pendingSaveMap===target) _pendingSaveMap=null; $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved'; }
-        catch(e2){ $('#saveText').textContent='Save failed'; }
-      }, 4000);
+        : 'Couldn’t reach the server - retrying in a few seconds. Keep this tab open until it says Saved.');
+      retry=true;
+    } else {
+      $('#saveText').textContent='Save failed';
     }
-  },delay);
+  } finally {
+    st.running=false; _savesInFlight--;
+  }
+  if(st.again){ st.again=false; return _runSave(target); }
+  if(retry) setTimeout(()=>_runSave(target, true), 4000);
 }
 // Commit any pending debounced edit to ITS OWN map right now - call before
 // switching maps so the write lands on the map that was edited, never on the
-// one just opened (which would reorder/overwrite it).
+// one just opened (which would reorder/overwrite it). It goes through the same
+// runner as every other save, so a failure is reported and retried, not dropped.
 function flushPendingSave(){
   if(!saveTimer) return;
   clearTimeout(saveTimer); saveTimer=null;
   const target=_pendingSaveMap; _pendingSaveMap=null;
-  if(target && !READONLY){ Promise.resolve().then(()=>Store.save(target)).catch(()=>{}); }
+  if(target && !READONLY) _runSave(target);
 }
+// Anything not yet written when the page goes away: a debounced save still
+// waiting (0.6s server / 1.5s cloud), a save on the wire, or a shared map's
+// pending cloud edit. Closing or reloading inside that window used to drop the
+// last edit without a word.
+function hasUnsavedWork(){
+  let cloud=false; try{ cloud=!!_cloudSaveTimer; }catch(e){}
+  return !!(saveTimer || _savesInFlight>0 || cloud);
+}
+// Start the write at once and let the browser ask whether to leave. The prompt
+// is the browser's own (its text cannot be set); it only appears while there
+// is actually something unsaved.
+window.addEventListener('beforeunload', e=>{
+  if(!hasUnsavedWork()) return;
+  flushPendingSave();
+  try{ flushCloudSave(); }catch(err){}
+  e.preventDefault(); e.returnValue='';
+});
+// pagehide also covers what beforeunload does not (mobile tab switches into the
+// back/forward cache). ServerStore marks small saves keepalive, so they finish.
+window.addEventListener('pagehide', ()=>{ flushPendingSave(); try{ flushCloudSave(); }catch(err){} });
 
 /* ============================================================
    EXPORT  (JSON + PNG via manual canvas render)
@@ -7544,8 +7859,15 @@ function showDiffPanel(d){
 async function previewVersion(mapId, ref, row){
   const data=await Store.version(mapId, ref);
   if(!data){ toast('Could not load that version'); return; }
-  if(!_historyPreview) _historyPreview={ original: JSON.parse(JSON.stringify(map)) };
+  // The banner says "read-only", and now it is: an edit on the preview (a drag, a
+  // collapse) used to autosave the OLD version over the map. READONLY blocks the
+  // edits, scheduleSave() refuses the preview object, and endHistoryPreview()
+  // puts both back.
+  if(!_historyPreview) _historyPreview={ original: map, readonly: READONLY };
   map = normalizeLoadedMap(data);
+  _historyPreview.preview = map;
+  READONLY = true;
+  const _t=$('#mapTitle'); if(_t) _t.readOnly=true;
   render(); fit();
   document.querySelectorAll('.hist-row').forEach(r=>r.classList.remove('active'));
   row?.classList.add('active');
@@ -7562,30 +7884,46 @@ function showPreviewBanner(mapId, ref){
   b.querySelector('.hb-restore').onclick=()=>restoreVersion(mapId, ref);
   b.querySelector('.hb-cancel').onclick=()=>{ cancelHistoryPreview(); };
 }
-function cancelHistoryPreview(){
+function cancelHistoryPreview(){ endHistoryPreview(true); }
+// Leave a history preview. `restore` puts back the map that was open; a switch to
+// another map passes false, since that map is already on its way in.
+function endHistoryPreview(restore){
   document.querySelectorAll('.hist-banner').forEach(b=>b.remove());
-  if(_historyPreview){ map=_historyPreview.original; _historyPreview=null; render(); fit(); }
+  const hp=_historyPreview; if(!hp) return;
+  _historyPreview=null;
+  READONLY=hp.readonly;
+  const t=$('#mapTitle'); if(t) t.readOnly=!!hp.readonly;
+  if(restore && map===hp.preview){ map=hp.original; render(); fit(); }
 }
 async function restoreVersion(mapId, ref){
   const data=await Store.version(mapId, ref);
   if(!data){ toast('Could not load that version'); return; }
+  const cur=(_historyPreview && _historyPreview.original) || map;   // the map as it is now, never the preview
+  endHistoryPreview(false);          // editing (and saving) are allowed again
   const restored=normalizeLoadedMap(data);
   restored.id=mapId;                 // keep identity
   restored.updated=Date.now();
-  _historyPreview=null;
+  // A restore brings back content, not the map's place in the world: its pin and
+  // the room it is published to stay as they are now.
+  if(cur && cur.id===mapId){ for(const k of ['pinned','_shareRoom','_editToken']) if(cur[k]!=null) restored[k]=cur[k]; }
   map=restored;
+  $('#mapTitle').value=map.title;
   history=[]; hpos=-1; pushHistory();   // restored state becomes a fresh undo baseline
   render(); fit();
-  try{ await Store.save(map); }catch(e){ console.warn('save after history restore failed:', e.message); toast('Restored, but saving failed - changes are local only'); }
+  flushPendingSave();                // write it now, through the one save runner (errors are reported there)
   document.querySelectorAll('.hist-banner,.hist-panel').forEach(p=>p.remove());
   refreshList();
   toast('Version restored');
 }
 // Normalize a loaded/decoded map object to the current shape (defensive defaults).
 function normalizeLoadedMap(m){
-  return sanitizeMapData({ id:m.id, title:m.title||'Untitled map', titleAuto:!!m.titleAuto, color:m.color||'#e0613a',
+  const out={ id:m.id, title:m.title||'Untitled map', titleAuto:!!m.titleAuto, color:m.color||'#e0613a',
            rootId:m.rootId, style:m.style, layout:m.layout||'balanced',
-           nodes:m.nodes||{}, links:m.links||[], vars:m.vars||{} });
+           nodes:m.nodes||{}, links:m.links||[], vars:m.vars||{} };
+  // Per-map settings are content too: a version restored without them came back
+  // with default spacing, style, look and colours.
+  for(const k of ['layoutPreset','layoutConfig','styleConfig','lookConfig','themeConfig','frontmatter']) if(m[k]!=null) out[k]=m[k];
+  return sanitizeMapData(out);
 }
 // ---- Map ingress ------------------------------------------------------------
 // Every whole map that arrives from outside this tab - a #view= share link, an
@@ -7606,16 +7944,106 @@ const SAFE_ID_RE = /^[\w.:-]{1,80}$/;
 const SAFE_IMAGE_RE = /^(https?:\/\/|data:image\/|blob:)/i;
 const NODE_ALIGNS = new Set(['left','center','right']);
 function safeColor(v){ return (typeof v === 'string' && SAFE_COLOR_RE.test(v.trim())) ? v.trim() : null; }
-function safeImageUrl(v){ return (typeof v === 'string' && v.length <= 4e6 && SAFE_IMAGE_RE.test(v)) ? v : null; }
+// A quote is never needed in an image URL (it would be %22) but can end the
+// src="..." attribute the URL is written into.
+function safeImageUrl(v){ return (typeof v === 'string' && v.length <= 4e6 && SAFE_IMAGE_RE.test(v) && !v.includes('"')) ? v : null; }
+// The per-node fields that end up in markup or styles. Shared by the whole-map
+// pass below and by live-session ops, which arrive one node at a time.
+function sanitizeNodeFields(n){
+  for(const k of ['color','textColor','highlight']){ if(k in n){ const c = safeColor(n[k]); if(c) n[k] = c; else delete n[k]; } }
+  if('marker' in n && !(typeof n.marker === 'string' && n.marker.length <= 16 && !/[<>&"']/.test(n.marker))) delete n.marker;
+  if('fontSize' in n && !(typeof n.fontSize === 'number' && isFinite(n.fontSize) && n.fontSize >= 6 && n.fontSize <= 96)) delete n.fontSize;
+  if('align' in n && !NODE_ALIGNS.has(n.align)) delete n.align;
+  if('image' in n && !safeImageUrl(n.image)) delete n.image;
+  return n;
+}
+// Map-level fields a live-session peer may change. Anything else - id,
+// _ephemeral, _cloudEdit... - would let a peer point the host's autosave at a
+// different map or flip local-only state, so it is ignored.
+const COLLAB_META_KEYS = new Set(['title','color','rootId','links','layout','vars','style']);
+// Apply a peer's ops to map m. A peer is as untrusted as a share link, so a
+// node op goes through the same field checks as a loaded map, and an id that
+// could not be a node key (__proto__, markup) is refused outright.
+function applyCollabOps(m, ops){
+  if(!m || !Array.isArray(ops)) return m;
+  // SAFE_ID_RE is word characters, so it does not by itself keep out the
+  // names that reach Object.prototype when used as a key.
+  const okId = id => typeof id === 'string' && SAFE_ID_RE.test(id) && id !== '__proto__' && id !== 'constructor' && id !== 'prototype';
+  for(const op of ops){
+    if(!op || typeof op !== 'object') continue;
+    if(op.t === 'node'){
+      if(!okId(op.id) || !op.n || typeof op.n !== 'object' || Array.isArray(op.n)) continue;
+      const n = sanitizeNodeFields(op.n); n.id = op.id;
+      if(n.parent != null && !okId(n.parent)) n.parent = null;
+      m.nodes[op.id] = n;
+    }
+    else if(op.t === 'del'){ if(okId(op.id)) delete m.nodes[op.id]; }
+    else if(op.t === 'meta' && COLLAB_META_KEYS.has(op.k)){
+      const v = op.v;
+      if(op.k === 'title'){ if(typeof v === 'string') m.title = v; }
+      else if(op.k === 'color'){ const c = safeColor(v); if(c) m.color = c; }
+      else if(op.k === 'rootId'){ if(okId(v)) m.rootId = v; }
+      else if(op.k === 'links'){ if(Array.isArray(v)) m.links = v.filter(l => l && typeof l === 'object' && okId(l.from) && okId(l.to)); }
+      else if(op.k === 'layout'){ if(typeof v === 'string') m.layout = v; }
+      else m[op.k] = v;   // vars, style: trusted exactly as far as the snapshot path trusts them
+    }
+  }
+  // A peer can re-parent any node, the root included - so the tree invariant is
+  // re-established here too, or one op could send every walk from the root round
+  // a loop for good.
+  return repairTree(m);
+}
+// The one structural invariant every walk relies on: a root with no parent, and
+// no parent chain that loops. A map breaks it only when it arrives malformed (a
+// share link, an import, a peer's op) - and then a walk from the root never ends:
+// computeRollups grew its stack until the tab ran out of memory. Repairs rather
+// than rejects: a missing root is re-chosen, and a loop is cut at the link that
+// closes it, leaving that node parent-less - where a node whose parent is missing
+// already ends up.
+function repairTree(m){
+  if(!m || !m.nodes || typeof m.nodes !== 'object') return m;
+  const nodes = m.nodes, ids = Object.keys(nodes);
+  if(!ids.length) return m;
+  if(!(typeof m.rootId === 'string' && nodes[m.rootId])){
+    m.rootId = ids.find(id => nodes[id] && nodes[id].parent == null) || ids[0];
+  }
+  nodes[m.rootId].parent = null;
+  const state = Object.create(null);   // 1 = on the path being walked, 2 = settled
+  for(const start of ids){
+    if(state[start]) continue;
+    const path = []; let cur = start;
+    while(cur != null && nodes[cur] && !state[cur]){ state[cur] = 1; path.push(cur); cur = nodes[cur].parent; }
+    if(cur != null && state[cur] === 1) nodes[path[path.length-1]].parent = null;   // this link closes a loop
+    for(const id of path) state[id] = 2;
+  }
+  return m;
+}
+// Fields a map carries only while it is open here, or that bind it to one shared
+// room: the edit token, the share room, the cloud-edit session, the live-session
+// flag. None of it is content. A JSON export handed the edit token of a published
+// map to anyone the file was sent to; an imported file could carry a crafted
+// _cloudEdit that sent every later save to someone else's room; and a duplicate
+// published straight over the original's shared copy.
+function stripRuntimeFields(m){
+  if(!m || typeof m !== 'object' || Array.isArray(m)) return m;
+  const out = {};
+  for(const k of Object.keys(m)) if(k.charAt(0) !== '_') out[k] = m[k];
+  return out;
+}
+// Node ids a map may not keep even though SAFE_ID_RE allows them: as keys they
+// reach Object.prototype.
+const UNSAFE_NODE_IDS = new Set(['__proto__','constructor','prototype']);
 function sanitizeMapData(m){
   if(!m || typeof m !== 'object' || Array.isArray(m)) return null;
   if(!m.nodes || typeof m.nodes !== 'object' || Array.isArray(m.nodes)) m.nodes = {};
   m.color = safeColor(m.color) || '#e0613a';
   // Ids first, so every field that names a node below sees the final keys.
-  const rename = {};
+  // A prototype-less object: on a plain {} the key "__proto__" sets the
+  // prototype instead of recording a rename.
+  const rename = Object.create(null);
   for(const id of Object.keys(m.nodes)){
     if(!m.nodes[id] || typeof m.nodes[id] !== 'object'){ delete m.nodes[id]; continue; }
-    if(!SAFE_ID_RE.test(id)){ let nid = uid(); while(m.nodes[nid] || rename[nid]) nid = uid(); rename[id] = nid; }
+    if(!SAFE_ID_RE.test(id) || UNSAFE_NODE_IDS.has(id)){ let nid = uid(); while(m.nodes[nid] || rename[nid]) nid = uid(); rename[id] = nid; }
   }
   const mapId = id => (typeof id === 'string' ? (rename[id] || id) : null);
   for(const old of Object.keys(rename)){ m.nodes[rename[old]] = m.nodes[old]; delete m.nodes[old]; }
@@ -7625,12 +8053,9 @@ function sanitizeMapData(m){
     n.id = id;
     n.parent = mapId(n.parent);
     if(n.parent !== null && !m.nodes[n.parent]) n.parent = null;
-    for(const k of ['color','textColor','highlight']){ if(k in n){ const c = safeColor(n[k]); if(c) n[k] = c; else delete n[k]; } }
-    if('marker' in n && !(typeof n.marker === 'string' && n.marker.length <= 16 && !/[<>&"']/.test(n.marker))) delete n.marker;
-    if('fontSize' in n && !(typeof n.fontSize === 'number' && isFinite(n.fontSize) && n.fontSize >= 6 && n.fontSize <= 96)) delete n.fontSize;
-    if('align' in n && !NODE_ALIGNS.has(n.align)) delete n.align;
-    if('image' in n && !safeImageUrl(n.image)) delete n.image;
+    sanitizeNodeFields(n);
   }
+  repairTree(m);
   m.links = Array.isArray(m.links)
     ? m.links.filter(l => l && typeof l === 'object').map(l => ({ ...l, from: mapId(l.from), to: mapId(l.to) }))
               .filter(l => l.from && l.to && m.nodes[l.from] && m.nodes[l.to])
@@ -7648,7 +8073,7 @@ function assemblePrompt(rootId){
   const lines=[];
   // Build ancestor chain from root to rootId so the prompt shows context.
   const ancestors=[];
-  { let cur=rootId; while(cur){ ancestors.unshift(cur); cur=map.nodes[cur]&&map.nodes[cur].parent; } }
+  { let cur=rootId; const seen=new Set(); while(cur && !seen.has(cur)){ seen.add(cur); ancestors.unshift(cur); cur=map.nodes[cur]&&map.nodes[cur].parent; } }
   // Print the ancestor chain at increasing depth.
   ancestors.forEach((id,i)=>{
     const n=map.nodes[id]; if(!n) return;
@@ -8167,7 +8592,7 @@ function endPresentation(){
 }
 
 function exportJSON(){
-  const blob=new Blob([JSON.stringify(map,null,2)],{type:'application/json'});
+  const blob=new Blob([JSON.stringify(stripRuntimeFields(map),null,2)],{type:'application/json'});   // no edit token, share room or session state in a file
   download(blob,(map.title||'mindmap')+'.json'); toast('JSON exported');
 }
 function importJSON(){ importFile(); }   // back-compat alias
@@ -8441,7 +8866,7 @@ function importFile(){
         else if(name.endsWith('.opml')||name.endsWith('.xml')) { m=parseOPML(t, f.name); }
         else { m=parseMarkdownOutline(t, f.name); }   // .md, .markdown, .txt
       }
-      m=sanitizeMapData(m);
+      m=sanitizeMapData(stripRuntimeFields(m));   // a file is content only - never a share binding or a cloud session
       if(!m || !m.nodes || !m.rootId) throw new Error('No recognizable outline');
       // Start collapsed so the user sees a clean top-level overview (unless the
       // format already carries its own expand state, e.g. .gmind).
@@ -8463,10 +8888,13 @@ function importFile(){
   inp.click();
 }
 // Convert basic inline markdown (**bold**, *italic*, ~~strike~~) to our HTML.
-function mdInlineToHtml(t){
+// display: the caller renders the result as HTML (the preview) rather than
+// storing it as node text - so plain text that merely LOOKS like markup (an
+// <img ...> line, say) must not go out raw.
+function mdInlineToHtml(t, display){
   const hasHtml = INLINE_HTML_RE.test(t);    // raw inline HTML (<b>, <sub>, <a>, ...) present?
   const hasMd = /!\[[^\]]*\]\([^)]+\)|\*\*[^*]+\*\*|(?:^|[^*])\*[^*]+\*|~~[^~]+~~|`[^`]+`|(?:^|[^!])\[[^\]]+\]\([^)]+\)/.test(t);
-  if(!hasHtml && !hasMd) return t;            // plain text stays plain
+  if(!hasHtml && !hasMd) return (display && t.includes('<')) ? scrubRawHtmlBlock(t) : t;   // plain text stays plain (scrubbed when it is about to become DOM)
   // keep any raw formatting HTML (sanitized) rather than escaping it to literal text
   let s = hasHtml ? sanitizeInlineHTML(t) : escapeHtml(t);
   // Code spans are masked out before the other inline rules run, and restored verbatim
@@ -8481,7 +8909,8 @@ function mdInlineToHtml(t){
   s = s.replace(/(^|[^*])\*([^*]+)\*/g, '$1<i>$2</i>');
   s = s.replace(/~~([^~]+)~~/g, '<s>$1</s>');
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (m,alt,src)=>'<img alt="'+alt.replace(/"/g,'&quot;')+'" src="'+src.replace(/"/g,'&quot;')+'" loading="lazy">');   // inline image
-  s = s.replace(/(^|[^!])\[([^\]]+)\]\(([^)]+)\)/g, '$1<a href="$3" target="_blank" rel="noopener noreferrer">$2</a>');
+  // In the preview a link must name a safe scheme; anything else renders as its label.
+  s = s.replace(/(^|[^!])\[([^\]]+)\]\(([^)]+)\)/g, (m,pre,label,url)=> (display && !safeLinkHref(url)) ? pre+label : pre+'<a href="'+url+'" target="_blank" rel="noopener noreferrer">'+label+'</a>');
   s = s.replace(/\uE010(\d+)\uE011/g, (m,idx)=>'<code>'+codeSlots[+idx]+'</code>');
   return s;
 }
@@ -8840,6 +9269,8 @@ function parseMarkdownOutline(text, filename){
         if(mm.highlight) n.highlight=mm.highlight; if(mm.align) n.align=mm.align;
         if(mm.image) n.image=mm.image; if(mm.ref) n.ref=true; if(mm.citation) n.citation=mm.citation;
         if(mm.created) n.created=mm.created; if(mm.updated) n.updated=mm.updated;
+        if(typeof mm.marker==='string' && mm.marker) n.marker=mm.marker;
+        if(typeof mm.label==='string' && mm.label) n.label=mm.label;
       }
       const kids=kidsOrd(id);
       // A node that matched nothing still gives its children positional paths
@@ -9317,6 +9748,10 @@ function _nodeMeta(n){   // per-node info that JSON has but Markdown can't expre
   // (applyMeta below still reads these legacy meta fields for files exported before this.)
   if(n.ref) m.ref=1;
   if(n.citation) m.citation=n.citation;
+  // A marker badge and a branch label have no Markdown syntax either; without
+  // them here a Markdown edit (or export + import) silently dropped both.
+  if(n.marker) m.marker=n.marker;
+  if(n.label) m.label=n.label;
   if(n.created) m.created=n.created;
   if(n.updated) m.updated=n.updated;
   return Object.keys(m).length? m : null;
@@ -9383,7 +9818,8 @@ function buildMarkdown(startId, opts){
     const imageLine = () => {
       if(!(rich && n.image)) return null;
       if(/^https?:\/\//i.test(n.image)) return `![${n.imageAlt||'image'}](${n.image})`;
-      return `<img src="${n.image}"${n.imageAlt ? ' alt="'+escapeHtml(n.imageAlt)+'"' : ''}>`;
+      // %22 rather than &quot;: still the same URL, and it survives the parser's round trip.
+      return `<img src="${String(n.image).replace(/"/g,'%22')}"${n.imageAlt ? ' alt="'+escapeHtml(n.imageAlt)+'"' : ''}>`;
     };
     let first;
     if(rich && n.listType){
@@ -9749,7 +10185,7 @@ function buildDoc(){
   let body = `<h1>${escapeHtml(title)}</h1>`;
   // Root's image, if any
   const rootN = map.nodes[map.rootId];
-  if(rootN && rootN.image){ body += `<img src="${rootN.image}" alt="${escapeHtml(rootN.imageAlt||'attachment')}" style="max-width:320px;max-height:220px;display:block;margin-bottom:10px;border-radius:8px">`; }
+  if(rootN && rootN.image){ body += `<img src="${escapeHtml(rootN.image)}" alt="${escapeHtml(rootN.imageAlt||'attachment')}" style="max-width:320px;max-height:220px;display:block;margin-bottom:10px;border-radius:8px">`; }
   // Add root's notes under the title
   const rn = rootN?.notes;
   if(rn){ body += `<p><em>${renderMathForExport(rn, 13, '#6a6258') ?? sanitizeInlineHTML(rn)}</em></p>`; }
@@ -9764,7 +10200,7 @@ function buildDoc(){
         ?? (INLINE_HTML_RE.test(n.text||'') ? sanitizeInlineHTML(n.text) : escapeHtml(n.text||'').replace(/\n/g,'<br>'));
       const taskMark = n.task ? (n.task==='done' ? '\u2611\uFE0F ' : n.task==='doing' ? '\u25D0 ' : '\u2610 ') : '';
       out += `<li>`;
-      if(n.image) out += `<img src="${n.image}" alt="${escapeHtml(n.imageAlt||'attachment')}" style="max-width:280px;max-height:200px;display:block;margin-bottom:4px;border-radius:6px"><br>`;
+      if(n.image) out += `<img src="${escapeHtml(n.image)}" alt="${escapeHtml(n.imageAlt||'attachment')}" style="max-width:280px;max-height:200px;display:block;margin-bottom:4px;border-radius:6px"><br>`;
       out += `${taskMark}${n.task==='done'?`<span style="text-decoration:line-through;opacity:.65">${txt}</span>`:txt}`;
       if(n.notes){ out += `<br><em style="color:#666">${renderMathForExport(n.notes, 13, '#6a6258') ?? sanitizeInlineHTML(n.notes)}</em>`; }
       out += renderChildren(cid, depth+1);
@@ -9919,6 +10355,18 @@ function drawNodeMath(ctx, text, o){
   ctx.restore();
 }
 
+// The export renders at 2x for crispness, scaled down when that would exceed what
+// the browser can allocate: a canvas past the limit silently renders blank, and on
+// iOS the whole-canvas cap is about 16.7M pixels. Pure, so it is testable.
+function pngExportScale(W, H, ios){
+  const MAX_DIM=16384, MAX_AREA=ios ? 16777216 : 67108864;
+  let k=2;
+  k=Math.min(k, MAX_DIM/Math.max(1,W), MAX_DIM/Math.max(1,H), Math.sqrt(MAX_AREA/Math.max(1,W*H)));
+  return Math.max(0.1, k);
+}
+function _isIOSLike(){
+  try{ return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1); }catch(e){ return false; }
+}
 async function exportPNG(){
   render();
   // Read live theme colors from CSS custom properties so the export matches
@@ -10076,8 +10524,9 @@ async function exportPNG(){
   }
   let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
   ids.forEach(i=>{const n=map.nodes[i];minx=Math.min(minx,n.x);miny=Math.min(miny,n.y);maxx=Math.max(maxx,n.x+(n.w||120));maxy=Math.max(maxy,n.y+(n.h||40));});
-  const pad=50,scale=2;
+  const pad=50;
   const W=(maxx-minx+pad*2),H=(maxy-miny+pad*2);
+  const scale=pngExportScale(W, H, _isIOSLike());
   const cv=document.createElement('canvas');cv.width=W*scale;cv.height=H*scale;
   const ctx=cv.getContext('2d');ctx.scale(scale,scale);
   // Exact background - matches .stage for any Colour Theme + I am look.
@@ -10291,6 +10740,20 @@ async function exportPNG(){
         }
       }
       ctx.globalAlpha=1; ctx.textAlign='start'; ctx.textBaseline='alphabetic'; ctx.shadowBlur=0;
+    } else if(look==='iitian'){
+      // Answer booklet, the same three layers .stage paints: rules every 26px
+      // at 75% line, an accent rule over every fifth one, and the double
+      // margin down the left. Line positions match the CSS stops exactly (25,
+      // 129, 64/68) or the PNG export drifts a pixel off the screen per tile.
+      ctx.strokeStyle=lineColor; ctx.lineWidth=1; ctx.globalAlpha=0.75;
+      for(let y=25; y<H; y+=26){ ctx.beginPath(); ctx.moveTo(0,y+0.5); ctx.lineTo(W,y+0.5); ctx.stroke(); }
+      ctx.strokeStyle=accentColor; ctx.globalAlpha=0.32;
+      for(let y=129; y<H; y+=130){ ctx.beginPath(); ctx.moveTo(0,y+0.5); ctx.lineTo(W,y+0.5); ctx.stroke(); }
+      ctx.globalAlpha=0.55;
+      ctx.beginPath(); ctx.moveTo(64.5,0); ctx.lineTo(64.5,H); ctx.stroke();
+      ctx.globalAlpha=0.30;
+      ctx.beginPath(); ctx.moveTo(68.5,0); ctx.lineTo(68.5,H); ctx.stroke();
+      ctx.globalAlpha=1;
     } else {
       // office / default - dot grid
       if(canvasDot){
@@ -10870,7 +11333,11 @@ async function exportPNG(){
   });
 
   try{
-    cv.toBlob(b=>{download(b,(map.title||'mindmap')+'.png');toast('PNG exported');});
+    cv.toBlob(b=>{
+      // A canvas past the browser's limits encodes to nothing rather than throwing.
+      if(!b){ toast('This map is too large to export as a PNG on this device'); return; }
+      download(b,(map.title||'mindmap')+'.png'); toast('PNG exported');
+    });
   }catch(e){
     // Only reachable if the canvas got tainted despite the CORS guard above.
     console.warn('PNG export failed:', e.message);
@@ -11065,8 +11532,8 @@ function drawFormattedText(ctx, html, opts){
 }
 // Pick black-or-white for best contrast against a hex background
 function pickContrast(hex){
-  const h = (hex||'').replace('#','');
-  if(h.length < 6) return '#23201b';
+  if(!hex) return '#23201b';
+  const h = hex6(hex).replace('#','');
   const r=parseInt(h.slice(0,2),16), g=parseInt(h.slice(2,4),16), b=parseInt(h.slice(4,6),16);
   // luminance roughly per WCAG
   const L = (0.299*r + 0.587*g + 0.114*b) / 255;
@@ -11113,7 +11580,10 @@ window.addEventListener('resize', ()=>{
 });
 window.addEventListener('beforeprint', ()=>{ try{ fit(); }catch(e){} });
 
-$('#layout').onclick=autoLayout;            // re-tidies node positions (does NOT move the camera)
+// Called with no arguments on purpose: as a bare handler it received the click
+// event as `noRender` (truthy), so it computed the tidy positions and then neither
+// drew nor saved them - the button looked dead.
+$('#layout').onclick=()=>autoLayout();      // re-tidies node positions (does NOT move the camera)
 // Collapse-all / expand-all toggle. If any collapsible node is currently
 // expanded, the first click collapses everything; otherwise it expands all.
 // Animates as an incremental cascade rather than jumping straight to the final state:
@@ -11305,7 +11775,7 @@ function renderTplList(){
     entries.forEach(([id,t])=>{
       const item=document.createElement('button'); item.type='button'; item.className='tpl-side-item';
       item.title=t.desc||t.name;
-      item.innerHTML='<span class="tpl-side-ic" style="background:'+(t.color||c.color)+'">'+(t.icon||'\u2726')+'</span>'+
+      item.innerHTML='<span class="tpl-side-ic" style="background:'+escapeHtml(safeColor(t.color)||c.color||'')+'">'+escapeHtml(t.icon||'\u2726')+'</span>'+
         '<span class="tpl-side-meta"><b>'+escapeHtml(t.name)+'</b><i>'+escapeHtml(t.desc||'')+'</i></span>';
       item.addEventListener('click',()=>{ if(typeof createMapFromTemplate==='function') createMapFromTemplate(id); });
       el.appendChild(item);
@@ -11893,6 +12363,7 @@ const LOOKS = [
   {id:'sailboat',    name:'on a<br>Sailboat',     font:'"Quicksand",sans-serif'},
   {id:'mathematician', name:'a Math<br>Expert', font:'"Cambria",Cambria,"Cambria Math",Georgia,serif'},
   {id:'matrix',       name:'in the<br>Matrix',     font:'"Courier New",monospace'},
+  {id:'iitian',       name:'an<br>IITian',    font:'"Anek Latin",system-ui,sans-serif'},
 ];
 const MAP_STYLES = [
   {id:'modern',  name:'Modern',  desc:'Soft cards, curved branches'},
@@ -12042,6 +12513,7 @@ const LOOK_CONFIG_DEFAULTS = {
   sailboat:     { font:'"Quicksand",sans-serif',                       nodeSize:1, radius:20 },
   mathematician:{ font:'"Cambria",Cambria,"Cambria Math",Georgia,serif', nodeSize:1, radius:14 },
   matrix:       { font:'"Courier New",monospace',                       nodeSize:1, radius:4  },
+  iitian:       { font:'"Anek Latin",system-ui,sans-serif',             nodeSize:1, radius:6  },
 };
 const LOOK_CONFIG_BOUNDS = { nodeSize:[0.8,1.6], radius:[0,60] };
 // Repairs rather than rejects, like validateStyleConfig: numbers are clamped
@@ -13222,13 +13694,20 @@ function renderTabs(){
 function openMapInTab(m){
   const key=m.id;
   const ex=_tabs.findIndex(t=>t.key===key);
-  if(ex>=0){ _activateTab(ex); return; }
+  if(ex>=0){
+    // loadMap() just fetched this map; the tab holds whatever it had when it was
+    // opened. Swap in the fresh copy - unless a save of the tab's own copy is still
+    // on the wire, in which case that copy is the newer one.
+    if(ex!==_tabActive && !_saveRunning(_tabs[ex].map)){ _tabs[ex].map=JSON.parse(JSON.stringify(m)); _tabs[ex].title=m.title||'Untitled'; }
+    _activateTab(ex); return;
+  }
   _tabs.push({key, title:m.title||'Untitled', map: JSON.parse(JSON.stringify(m))});
   _activateTab(_tabs.length-1);
 }
 function _activateTab(i){
   const t=_tabs[i]; if(!t) return;
   if(i===_tabActive){ renderTabs(); return; }
+  endHistoryPreview(false);
   flushPendingSave();
   map=t.map; sel=map.rootId;
   const _imported=!!map._import; if(_imported) delete map._import;
@@ -13644,7 +14123,7 @@ function minimalSubPlacement(rect, subW, subH, vw, vh, menuLeft, menuRight){
       el.type='button'; el.className='mm-item'+(item.active?' active':'');
       if(item.id!==undefined) el.dataset.mapId=item.id;
       else{ el.dataset.room=item.room||''; el.dataset.token=item.token||''; }
-      el.innerHTML='<span class="mm-ic"><span class="dot" style="background:'+(item.color||'#e0613a')+'"></span></span><span class="mm-lbl">'+escapeHtml(item.title||'Untitled')+'</span>'+(item.pinned?'<span class="mm-pin">📌</span>':'');
+      el.innerHTML='<span class="mm-ic"><span class="dot" style="background:'+escapeHtml(safeColor(item.color)||'#e0613a')+'"></span></span><span class="mm-lbl">'+escapeHtml(item.title||'Untitled')+'</span>'+(item.pinned?'<span class="mm-pin">📌</span>':'');
       panel.appendChild(el);
     };
     if(!idx.length) panel.innerHTML='<div class="mm-empty">No maps yet</div>';
@@ -13670,7 +14149,7 @@ function minimalSubPlacement(rect, subW, subH, vw, vh, menuLeft, menuRight){
       any=true;
       const el=document.createElement('button');
       el.type='button'; el.className='mm-item mm-has-sub'; el.dataset.cat=c.id;
-      el.innerHTML='<span class="mm-ic" style="color:'+c.color+'">'+escapeHtml(c.icon||'✦')+'</span><span class="mm-lbl">'+escapeHtml(c.label)+'</span><span class="mm-caret">▸</span>';
+      el.innerHTML='<span class="mm-ic" style="color:'+escapeHtml(c.color||'')+'">'+escapeHtml(c.icon||'✦')+'</span><span class="mm-lbl">'+escapeHtml(c.label)+'</span><span class="mm-caret">▸</span>';
       panel.appendChild(el);
     }
     if(!any) panel.innerHTML='<div class="mm-empty">No templates</div>';
@@ -13684,7 +14163,7 @@ function minimalSubPlacement(rect, subW, subH, vw, vh, menuLeft, menuRight){
     entries.forEach(([id,t])=>{
       const el=document.createElement('button');
       el.type='button'; el.className='mm-item'; el.dataset.tpl=id;
-      el.innerHTML='<span class="mm-ic" style="color:'+(t.color||c.color)+'">'+escapeHtml(t.icon||'✦')+'</span><span class="mm-lbl">'+escapeHtml(t.name)+'</span>';
+      el.innerHTML='<span class="mm-ic" style="color:'+escapeHtml(safeColor(t.color)||c.color||'')+'">'+escapeHtml(t.icon||'✦')+'</span><span class="mm-lbl">'+escapeHtml(t.name)+'</span>';
       panel.appendChild(el);
     });
   };
@@ -15637,6 +16116,7 @@ function showLoginOverlay(opts){
   if(note){
     if(opts && opts.shared){ note.textContent='This map was shared with you. Sign in to open it.'; note.style.display='block'; }
     else if(opts && opts.expired){ note.textContent='Your session expired. Sign in again to keep working - your maps are safe in your repository.'; note.style.display='block'; }
+    else if(opts && opts.unreachable){ note.textContent='Couldn’t reach '+forgeName()+' just now, so your saved sign-in was kept. Check your connection and reload - or sign in again below.'; note.style.display='block'; }
     else { note.style.display='none'; }
   }
   const sign=$('#ghSignIn'), pat=$('#ghPat'), err=$('#ghError');
@@ -15685,7 +16165,10 @@ function showLoginOverlay(opts){
   };
   const doLogin=()=>attempt(sign, err, pat, 'github', null);
   sign.onclick = doLogin;
-  pat.addEventListener('keydown', e=>{ if(isComposingKey(e)) return; if(e.key==='Enter') doLogin(); });
+  // Property handlers, not addEventListener: this overlay opens again after every
+  // expired session, and each opening stacked another listener - Enter then signed
+  // in twice, or opened two OAuth popups whose states overwrote each other.
+  pat.onkeydown = e=>{ if(isComposingKey(e)) return; if(e.key==='Enter') doLogin(); };
 
   // Every self-hosted pane is wired from SELF_HOSTED_PANES rather than by hand,
   // because they are the same three controls pointed at a different instance.
@@ -15738,22 +16221,22 @@ function showLoginOverlay(opts){
         if(known) tClient.value=known;
       }
     };
-    inst.addEventListener('input', syncLinks);
+    inst.oninput = syncLinks;
     syncLinks();
 
     if(tOauth && tClient){
       tOauth.onclick=()=>startForgeLogin(pn.forgeId, inst.value, (tClient.value||'').trim());
-      tClient.addEventListener('keydown', e=>{ if(isComposingKey(e)) return; if(e.key==='Enter') tOauth.click(); });
+      tClient.onkeydown = e=>{ if(isComposingKey(e)) return; if(e.key==='Enter') tOauth.click(); };
     }
     if(tSign && tPat){
       const go=()=>attempt(tSign, tErr, tPat, pn.forgeId, inst);
       tSign.onclick = go;
-      tPat.addEventListener('keydown', e=>{ if(isComposingKey(e)) return; if(e.key==='Enter') go(); });
-      inst.addEventListener('keydown', e=>{
+      tPat.onkeydown = e=>{ if(isComposingKey(e)) return; if(e.key==='Enter') go(); };
+      inst.onkeydown = e=>{
         if(isComposingKey(e)) return;
         if(e.key!=='Enter') return;
         if(tClient && !tClient.value) tClient.focus(); else if(tOauth) tOauth.click();
-      });
+      };
     }
   }
 
@@ -15800,11 +16283,20 @@ async function _gzip(str){
   const buf=await new Response(cs.readable).arrayBuffer();
   return new Uint8Array(buf);
 }
-async function _gunzip(bytes){
+// Bounded: a #view= link is untrusted, and a few hundred KB of gzip can expand to
+// gigabytes - reading it whole froze and then crashed the tab.
+async function _gunzip(bytes, max=20*1024*1024){
   const ds=new DecompressionStream('gzip');
-  const w=ds.writable.getWriter(); w.write(bytes); w.close();
-  const buf=await new Response(ds.readable).arrayBuffer();
-  return new TextDecoder().decode(buf);
+  const w=ds.writable.getWriter(); w.write(bytes).catch(()=>{}); w.close().catch(()=>{});
+  const reader=ds.readable.getReader(); const chunks=[]; let total=0;
+  for(;;){
+    const {done, value}=await reader.read(); if(done) break;
+    total+=value.length;
+    if(total>max){ try{ reader.cancel(); }catch(e){} throw new Error('This share link expands past '+Math.round(max/1048576)+' MB'); }
+    chunks.push(value);
+  }
+  const out=new Uint8Array(total); let o=0; for(const c of chunks){ out.set(c,o); o+=c.length; }
+  return new TextDecoder().decode(out);
 }
 function _shareePayload(m){
   const p = { v:1, title:m.title, color:m.color, style:m.style, layout:m.layout,
@@ -15812,6 +16304,7 @@ function _shareePayload(m){
   if(m.layoutConfig) p.layoutConfig = m.layoutConfig;   // omitted entirely when unset
   if(m.styleConfig) p.styleConfig = m.styleConfig;
   if(m.lookConfig) p.lookConfig = m.lookConfig;
+  if(m.themeConfig) p.themeConfig = m.themeConfig;   // the Theme dialog promises "included in share links"
   return p;
 }
 async function buildShareLink(){
@@ -15867,7 +16360,7 @@ async function tryEnterSharedView(){
   map=sanitizeMapData({ id:'shared', title:payload.title||'Shared map', color:payload.color||'#e0613a',
         style:payload.style, layout:payload.layout, rootId:payload.rootId,
         nodes:payload.nodes||{}, links:payload.links||[], vars:payload.vars||{},
-        layoutConfig:payload.layoutConfig, styleConfig:payload.styleConfig, lookConfig:payload.lookConfig });
+        layoutConfig:payload.layoutConfig, styleConfig:payload.styleConfig, lookConfig:payload.lookConfig, themeConfig:payload.themeConfig });
   sel=null;
   $('#mapTitle').value=map.title; $('#mapTitle').readOnly=true;
   // Grow the title <input> to fit the whole title (it clips to its width) so a
@@ -15912,7 +16405,8 @@ async function consumePendingImport(){
   const id=uid();
   map=sanitizeMapData({ id, title:(p.title||'Shared map')+' (copy)', titleAuto:false, color:p.color||'#e0613a',
         style:p.style, layout:p.layout, rootId:p.rootId, nodes:p.nodes||{},
-        links:p.links||[], vars:p.vars||{}, updated:Date.now() });
+        links:p.links||[], vars:p.vars||{}, updated:Date.now(),
+        layoutConfig:p.layoutConfig, styleConfig:p.styleConfig, lookConfig:p.lookConfig, themeConfig:p.themeConfig });   // an editable copy keeps the map's settings
   sel=map.rootId; history=[]; hpos=-1; pushHistory();
   $('#mapTitle').value=map.title;
   render(); fit();
@@ -15991,7 +16485,7 @@ const Collab = (function(){
     ws.onclose=()=>{ active=false; clearCursors(); updatePill(); };
     ws.onerror=()=>{ toast('Live connection error'); };
   }
-  function stop(notify){ clearInterval(pingTimer); clearInterval(reapTimer); if(ws){ try{ ws.close(); }catch(e){} } ws=null; active=false; room=null; peers.clear(); clearCursors(); updatePill(); if(notify) toast('Left live session'); }
+  function stop(notify){ clearInterval(pingTimer); clearInterval(reapTimer); clearTimeout(opTimer); clearTimeout(snapTimer); if(ws){ try{ ws.close(); }catch(e){} } ws=null; active=false; room=null; peers.clear(); clearCursors(); updatePill(); if(notify) toast('Left live session'); }
   function send(o){ if(ws&&ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }catch(e){ console.warn('live-session send failed; this edit was not broadcast:', e.message); } } }
   function link(){ return location.origin+location.pathname+'#live='+room; }
   function copyLink(){ try{ navigator.clipboard.writeText(link()); }catch(e){ console.warn('clipboard write failed:', e.message); toast('Could not copy - copy the link from the address bar'); } }
@@ -16036,11 +16530,10 @@ const Collab = (function(){
   function applyOps(ops){
     applying=true;
     try{
-      for(const op of ops){
-        if(op.t==='node') map.nodes[op.id]=op.n;
-        else if(op.t==='del'){ delete map.nodes[op.id]; if(sel===op.id) sel=null; }
-        else if(op.t==='meta'){ if(op.k==='title'){ map.title=op.v; const t=$('#mapTitle'); if(t) t.value=op.v; } else map[op.k]=op.v; }
-      }
+      const title=map.title;
+      applyCollabOps(map, ops);
+      if(sel && !map.nodes[sel]) sel=null;
+      if(map.title!==title){ const t=$('#mapTitle'); if(t) t.value=map.title; }
       shadow=snap(); render();
     } finally { applying=false; }    // same guarantee - a malformed op or a render() edge case must not permanently wedge sync
     if(map && !map._ephemeral && !READONLY) scheduleSave();   // host persists collaborators' edits
@@ -16302,6 +16795,10 @@ async function publishSharedMap(){
 // ---- Identity-based access control: owner manages named collaborators + link access ----
 async function accessApi(roomId, sub, opts){
   const base=sharedApiUrl(roomId); if(!base) return { status:0, ok:false, d:{} };
+  // A legacy token map is only claimable by whoever holds its edit token, so
+  // prove it when this map carries the token for this room.
+  const tok=map && ((map._cloudEdit && map._cloudEdit.id===roomId && map._cloudEdit.token) || ((map._shareRoom||map.id)===roomId && map._editToken));
+  if(tok){ opts={...(opts||{})}; opts.headers={...(opts.headers||{}), 'X-Edit-Token':tok}; }
   try{ const r=await _collabFetch(base+(sub?('/'+sub):''), opts||{}); let d={}; try{ d=await r.json(); }catch(e){} return { status:r.status, ok:r.ok, d }; }
   catch(e){ return { status:0, ok:false, d:{} }; }
 }
@@ -16562,7 +17059,8 @@ function _applySharedMap(id, token, data){
   document.body.classList.add('no-banner');   // compact themed pill instead of a full-width banner
   map=sanitizeMapData({ id:'shared-'+id, title:data.title||'Shared map', color:data.color||'#e0613a',
         style:data.style, layout:data.layout||'balanced', rootId:data.rootId,
-        nodes:data.nodes||{}, links:data.links||[], vars:data.vars||{} });
+        nodes:data.nodes||{}, links:data.links||[], vars:data.vars||{},
+        layoutConfig:data.layoutConfig, styleConfig:data.styleConfig, lookConfig:data.lookConfig, themeConfig:data.themeConfig });   // collaborators see the owner's spacing, style, look and colours
   map._cloudView=id;
   map._opening=true;                 // opening a shared map isn't an edit - suppress the save pill until it settles
   if(editable){ map._cloudEdit={ id, token }; }
@@ -16606,6 +17104,7 @@ function exitSharedMode(){
 // visible and switchable, the way Overleaf keeps owned and shared projects in one list.
 async function openSharedInPlace(id, token){
   if(typeof leaveLiveForSwitch==='function' && !leaveLiveForSwitch()) return false;
+  endHistoryPreview(false);
   flushPendingSave();          // persist the outgoing map
   exitSharedMode();            // clear any previous shared banner/poll
   showSharedPill(!!token);     // set the shared pill NOW so the username doesn't flash during the fetch
@@ -16663,7 +17162,9 @@ function _qotdRender(q){
     txt.textContent=q.text||''; auth.textContent=q.author||'Unknown';
   } else if(q.word){
     txt.hidden=true; auth.hidden=true; word.hidden=false; def.hidden=false;
-    word.innerHTML=''+q.word+(q.part?' <span class="wotd-part">'+q.part+'</span>':'');
+    // Third-party API text: never markup. innerHTML here ran whatever the word API returned.
+    word.textContent=q.word;
+    if(q.part){ const sp=document.createElement('span'); sp.className='wotd-part'; sp.textContent=q.part; word.append(' ', sp); }
     def.textContent=q.definition||'';
   }
   wrap.hidden=false;
@@ -16931,7 +17432,7 @@ else loadQotd();
   if(mode==='cloud'){
     if(loggedIn){ showUserPill(); await ensureCollabIdentity(); await proceedBoot(); await _openSharedAfterBoot(); }
     else if(_sh){ _pendingSharedLink={ id:decodeURIComponent(_sh[1]), token:_sh[2]?decodeURIComponent(_sh[2]):null }; showLoginOverlay({ shared:true }); }   // shared link -> require sign-in first
-    else { showLoginOverlay(CloudStore.sessionExpired ? {expired:true} : undefined); }
+    else { showLoginOverlay(CloudStore.sessionExpired ? {expired:true} : (CloudStore.lastInitError ? {unreachable:true} : undefined)); }
   } else {
     await proceedBoot(); await _openSharedAfterBoot();   // server / local mode
   }

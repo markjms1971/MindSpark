@@ -597,3 +597,80 @@ describe('CloudStore repository target', () => {
     assert.ok(log.some(c => c.url === 'https://api.github.com/repos/acme/mindspark-maps/contents/maps/m1.json'));
   });
 });
+
+// On GitHub and Gitea a refused write (409 - the file moved on since we read it)
+// used to be "recovered" by re-reading the sha and writing again: whatever another
+// device had saved in between was silently overwritten, while the same situation
+// on GitLab was reported as a conflict. The map path is now strict everywhere.
+describe('CloudStore over GitHub: a map changed elsewhere is a conflict', () => {
+  const REPO = 'https://api.github.com/repos/ada/mindspark-maps';
+  function shaNet() {
+    const files = {}; let n = 0;
+    const { log, fetchImpl } = net([
+      [(m, u) => u === 'https://api.github.com/user', () => res(200, { id: 1, login: 'ada' })],
+      [(m, u) => u === REPO, () => res(200, {})],
+      [(m, u) => m === 'GET' && u.startsWith(REPO + '/contents/'), (m, u) => {
+        const path = u.slice((REPO + '/contents/').length).split('?')[0];
+        return files[path] ? res(200, { content: b64(files[path].text), sha: files[path].sha, encoding: 'base64' }) : res(404, {});
+      }],
+      [(m, u) => m === 'PUT' && u.startsWith(REPO + '/contents/'), (m, u, body) => {
+        const path = u.slice((REPO + '/contents/').length);
+        if (files[path] && body.sha !== files[path].sha) return res(409, { message: 'is at X but expected Y' });
+        if (!files[path] && body.sha) return res(404, {});
+        files[path] = { text: Buffer.from(body.content, 'base64').toString('utf8'), sha: 'sha' + (++n) };
+        return res(200, { content: { sha: files[path].sha } });
+      }],
+    ]);
+    return { files, log, fetchImpl };
+  }
+
+  test('the other device\'s save survives and the caller is told', async () => {
+    const gh = shaNet();
+    const { CloudStore } = loadStore(gh.fetchImpl);
+    await CloudStore.login('ghp_x', 'github', null);
+    await CloudStore.save({ id: 'm1', title: 'Mine v1' });
+    gh.files['maps/m1.json'] = { text: JSON.stringify({ id: 'm1', title: 'Theirs' }), sha: 'other' };
+
+    let err = null;
+    try { await CloudStore.save({ id: 'm1', title: 'Mine v2' }); } catch (e) { err = e; }
+    assert.ok(err && err.conflict === true, 'reported as a conflict, like GitLab');
+    assert.equal(JSON.parse(gh.files['maps/m1.json'].text).title, 'Theirs', 'their save is still there');
+    assert.equal(CloudStore.shas.m1, 'other', 'their version is adopted, so the NEXT save is a deliberate overwrite');
+    await CloudStore.save({ id: 'm1', title: 'Mine v3' });
+    assert.equal(JSON.parse(gh.files['maps/m1.json'].text).title, 'Mine v3');
+  });
+
+  test('saves in a row still carry each other\'s sha - no false conflicts', async () => {
+    const gh = shaNet();
+    const { CloudStore } = loadStore(gh.fetchImpl);
+    await CloudStore.login('ghp_x', 'github', null);
+    for (const t of ['a', 'b', 'c']) await CloudStore.save({ id: 'm1', title: t });
+    assert.equal(JSON.parse(gh.files['maps/m1.json'].text).title, 'c');
+  });
+});
+
+// tryInit() used to delete the saved token on ANY failure - so opening the app
+// offline, or while GitHub rate-limited the repo check (403), signed the user
+// out for good. Only a forge that refused the token ends the session now.
+describe('CloudStore.tryInit keeps a token it could not check', () => {
+  const token = () => new Map([['mindspark:gh:token', 'ghp_x']]);
+  test('offline', async () => {
+    const store = token();
+    const { CloudStore } = loadStore(async () => { throw new TypeError('Failed to fetch'); }, store);
+    assert.equal(await CloudStore.tryInit(), false);
+    assert.equal(store.get('mindspark:gh:token'), 'ghp_x');
+    assert.ok(CloudStore.lastInitError, 'boot can tell the user why sign-in is showing');
+  });
+  test('rate limited (403) on the repository check', async () => {
+    const store = token();
+    const { CloudStore } = loadStore(async u => u.endsWith('/user') ? res(200, { id: 1, login: 'ada' }) : res(403, { message: 'API rate limit exceeded' }), store);
+    assert.equal(await CloudStore.tryInit(), false);
+    assert.equal(store.get('mindspark:gh:token'), 'ghp_x');
+  });
+  test('a token the forge refuses (401) is still forgotten', async () => {
+    const store = token();
+    const { CloudStore } = loadStore(async () => res(401, { message: 'Bad credentials' }), store);
+    assert.equal(await CloudStore.tryInit(), false);
+    assert.equal(store.has('mindspark:gh:token'), false);
+  });
+});

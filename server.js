@@ -62,7 +62,8 @@ const Q = {
   update: db.prepare('UPDATE maps SET title=?, color=?, data=?, updated=? WHERE id=?'),
   del:    db.prepare('DELETE FROM maps WHERE id = ?'),
   // version history
-  vLatest: db.prepare('SELECT data FROM map_versions WHERE id = ? ORDER BY ts DESC LIMIT 1'),
+  vLatest: db.prepare('SELECT ts, data FROM map_versions WHERE id = ? ORDER BY ts DESC LIMIT 1'),
+  vUpdate: db.prepare('UPDATE map_versions SET data = ? WHERE id = ? AND ts = ?'),
   vInsert: db.prepare('INSERT OR REPLACE INTO map_versions (id,ts,data) VALUES (?,?,?)'),
   vList:   db.prepare('SELECT ts FROM map_versions WHERE id = ? ORDER BY ts DESC LIMIT 100'),
   vGet:    db.prepare('SELECT data FROM map_versions WHERE id = ? AND ts = ?'),
@@ -75,13 +76,21 @@ const upsert = (m) => {
   const r = Q.update.run(m.title || 'Untitled map', m.color || null, data, updated, m.id);
   if (r.changes === 0) Q.insert.run(m.id, m.title || 'Untitled map', m.color || null, data, updated);
   // Snapshot a version only when the content actually changed (skips no-op autosaves),
-  // then prune to the most recent 50 per map.
+  // then prune to the most recent 50 per map. Saves within a minute of the newest
+  // version refine that version instead of adding one: autosave runs after every
+  // 0.6s pause in editing, so a version per save let the 50-version cap cover only
+  // the last few minutes - and wrote a full copy of the map (images included) each time.
   const last = Q.vLatest.get(m.id);
   if (!last || last.data !== data) {
-    Q.vInsert.run(m.id, updated, data);
-    Q.vDelOld.run(m.id, m.id);
+    if (last && updated - last.ts < VERSION_WINDOW_MS) {
+      Q.vUpdate.run(data, m.id, last.ts);
+    } else {
+      Q.vInsert.run(m.id, updated, data);
+      Q.vDelOld.run(m.id, m.id);
+    }
   }
 };
+const VERSION_WINDOW_MS = 60 * 1000;
 
 // ---- map import (GPT integration) ---------------------------------------
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -120,24 +129,57 @@ function buildMapFromSpec(spec) {
     if (typeof n.notes === 'string' && n.notes.trim()) node.notes = n.notes;
     if (n.collapsed === true) node.collapsed = true;
     if (n.tag != null && n.tag !== '') node.tag = String(n.tag);
+    // Everything from here to the layoutConfig block mirrors
+    // worker/import-core.js buildMapFromSpec() field for field - a spec must
+    // import the same through the self-hosted server as through the Worker
+    // (test/server-http.test.mjs compares the two).
+    if (n.listType === 'ul' || n.listType === 'ol') { node.listType = n.listType; node.align = node.align || 'left'; }
+    if (n.bold === true) node.bold = true;
+    if (n.italic === true) node.italic = true;
+    if (n.highlight === true) node.highlight = true;
+    if (n.align === 'left' || n.align === 'center' || n.align === 'right') node.align = n.align;
+    if (n.task === 'done' || n.task === 'todo') node.task = n.task;
+    if (typeof n.marker === 'string') {
+      const mk = n.marker.trim();
+      if (mk && [...mk].length <= 2) node.marker = mk;
+    }
     if (n.citation && typeof n.citation === 'object') {
       const c = n.citation, cit = {};
       if (Array.isArray(c.authors) && c.authors.length) cit.authors = c.authors.join(', ');
       else if (typeof c.authors === 'string' && c.authors.trim()) cit.authors = c.authors.trim();
       if (c.year != null) cit.year = c.year;
       if (typeof c.title === 'string' && c.title.trim()) cit.title = c.title.trim();
+      if (typeof c.source === 'string' && c.source.trim()) cit.source = c.source.trim();
       if (typeof c.doi === 'string' && c.doi.trim()) cit.doi = c.doi.trim();
-      else if (typeof c.arxiv === 'string' && c.arxiv.trim()) { cit.doi = 'arXiv:' + c.arxiv.trim(); cit.source = 'arXiv'; }
+      else if (typeof c.arxiv === 'string' && c.arxiv.trim()) { cit.doi = 'arXiv:' + c.arxiv.trim(); if (!cit.source) cit.source = 'arXiv'; }
       if (Object.keys(cit).length) { node.citation = cit; node.ref = true; }
     }
     nodes[n.id] = node;
   }
+  // Balance root branches like balanceRootSides(): first half right, second half left.
+  const rootKids = inNodes.filter(n => n.id !== rootId && n.parent === rootId).map(n => n.id);
+  const half = Math.ceil(rootKids.length / 2);
+  rootKids.forEach((id, i) => { nodes[id].side = (i < half) ? 'right' : 'left'; });
   const links = Array.isArray(spec.links)
     ? spec.links.filter(l => l && byId.has(l.from) && byId.has(l.to))
                 .map(l => { const o = { from: l.from, to: l.to }; if (l.label != null && l.label !== '') o.label = String(l.label); return o; })
     : [];
-  return { id: uid(), title, titleAuto: false, color: (typeof spec.color === 'string' && spec.color) ? spec.color : '#e0613a',
+  const out = { id: uid(), title, titleAuto: false, color: (typeof spec.color === 'string' && spec.color) ? spec.color : '#e0613a',
            layout: 'balanced', rootId, nodes, links, _import: true, updated: Date.now() };
+  // Layout knobs, bounded rather than trusted (same rules as the Worker).
+  if (spec.layoutConfig && typeof spec.layoutConfig === 'object' && !Array.isArray(spec.layoutConfig)) {
+    const t = spec.layoutConfig.timeline;
+    if (t && typeof t === 'object' && !Array.isArray(t)) {
+      const tl = {}, bounds = { gap: [8, 400], stem: [0, 300], indent: [0, 300] };
+      for (const k of ['gap', 'stem', 'indent']) {
+        if (typeof t[k] === 'number' && isFinite(t[k])) tl[k] = Math.min(bounds[k][1], Math.max(bounds[k][0], Math.round(t[k])));
+      }
+      if (typeof t.alternate === 'boolean') tl.alternate = t.alternate;
+      if (t.start === 'above' || t.start === 'below') tl.start = t.start;
+      if (Object.keys(tl).length) out.layoutConfig = { timeline: tl };
+    }
+  }
+  return out;
 }
 
 // ---- extra Content-Security-Policy origins --------------------------------
@@ -195,10 +237,22 @@ const send = (res, code, body, type='application/json', req, entry) => {
 // silently ignored (or throws), and upsert() would then store the literal,
 // which breaks the next list load on the client.
 const isMapBody = (m) => !!m && typeof m === 'object' && !Array.isArray(m);
+// Chunks are kept as bytes and decoded once at the end: `str += chunk` decodes
+// each chunk on its own, so any multi-byte character (emoji, Devanagari, CJK)
+// that straddles a chunk boundary came out as two U+FFFD - silent corruption
+// of every non-ASCII map bigger than one ~64 KB chunk.
 const readBody = (req) => new Promise((resolve, reject) => {
-  let d = '';
-  req.on('data', c => { d += c; if (d.length > 8e6) { req.destroy(); reject(new Error('payload too large')); } });
-  req.on('end', () => { try { resolve(d ? JSON.parse(d) : {}); } catch (e) { reject(e); } });
+  const chunks = []; let size = 0;
+  req.on('data', c => {
+    size += c.length;
+    if (size > 8e6) { req.destroy(); reject(new Error('payload too large')); return; }
+    chunks.push(c);
+  });
+  req.on('end', () => {
+    const d = Buffer.concat(chunks).toString('utf8');
+    try { resolve(d ? JSON.parse(d) : {}); }
+    catch (e) { e.status = 400; reject(e); }   // the client's mistake, not a server error
+  });
   req.on('error', reject);
 });
 
@@ -364,9 +418,22 @@ const server = http.createServer(async (req, res) => {
     }
     send(res, 404, { error: 'not found' });
   } catch (e) {
-    send(res, 500, { error: String(e && e.message || e) });
+    send(res, (e && e.status) || 500, { error: String(e && e.message || e) });
   }
 });
+
+// A port already in use used to crash with a raw stack trace (and the desktop
+// launcher had already told the browser to open). Say what happened instead.
+server.on('error', (e) => {
+  if (e && e.code === 'EADDRINUSE') {
+    console.error(`\n  Port ${PORT} is already in use - is MindSpark already running?`);
+    console.error(`  Open http://localhost:${PORT}, or start on another port: PORT=3001 node server.js\n`);
+    process.exit(1);
+  }
+  throw e;
+});
+// The launcher waits for 'listening' before it opens a browser.
+module.exports = server;
 
 server.listen(PORT, () => {
   console.log(`\n  MindSpark running → http://localhost:${PORT}`);

@@ -2451,8 +2451,20 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
      mask, and background-color supplies the tint. Matches drawLookBg's teal
      fleet at alpha 0.06. A hardcoded near-black silhouette was invisible on
      dark paper. */
+  /* Width is pinned to the VIEWPORT, not the stage (right:auto overrides the
+     inset's right edge; left and bottom - the mask origin - are unchanged).
+     Tied to the stage, every frame of the sidebar's 220ms width transition
+     resized all four full-stage masked layers, and a resized layer is
+     re-rasterised from scratch: measured at 6x CPU throttle, raster time per
+     six toggles 2866ms against 1430ms without the layers, 24fps against the
+     static looks' 48. A box that never changes size keeps its tiles, and the
+     stage's overflow:hidden clips the part past its right edge. The stage is
+     never wider than the viewport, and --ui-zoom converts viewport pixels
+     into this subtree's zoomed pixels, so the layer always reaches past the
+     right edge. */
   .wave-layer,.wave-layer-mid,.wave-layer-far{
     position:absolute; inset:-8px 0 -8px -400px; pointer-events:none; z-index:0;   /* scenery: under #viewport (see _syncLookFx) */
+    right:auto; width:calc(100vw / var(--ui-zoom, 1) + 400px);
     will-change:transform; contain:paint;
     background-color:color-mix(in srgb, var(--teal) 6%, transparent);
     -webkit-mask-repeat:repeat;               mask-repeat:repeat;
@@ -2474,6 +2486,7 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
      filled hull gets for free from its area. */
   .swell-layer{
     position:absolute; inset:-8px 0 -8px -200px; pointer-events:none; z-index:0;
+    right:auto; width:calc(100vw / var(--ui-zoom, 1) + 200px);   /* viewport-pinned like the boat layers above: a sidebar toggle must not resize it */
     will-change:transform; contain:paint;
     background-color:color-mix(in srgb, var(--teal) 10%, transparent);
     -webkit-mask-image:var(--swell-mask, none);
@@ -2908,6 +2921,96 @@ body.ui-classic.tabs-on.md-ready .stage{grid-column:3;grid-row:2}
 }
 :root[data-look="matrix"] .breadcrumb .bc-sep{ color:var(--accent-text); opacity:0.9; font-weight:900; }
 @keyframes matrixBlink{ 0%,50%{opacity:1} 50.01%,100%{opacity:0} }
+
+/* ===== "IITian" look - the answer booklet ===== */
+  /* Anek Latin is an Indian Type Foundry face, so the one look here whose type
+     comes from the same place the name does. The rest is an exam answer
+     booklet: ruled paper with the double margin rule down the left and an
+     accent rule over every fifth line, squared chrome, uppercase tracked
+     labels, a shell-style breadcrumb and a reticle minimap.
+     No palette, no .node shape and no branch style - colour belongs to Colour
+     Theme and card/branch shape belongs to Map Style, as in every other look. */
+  :root[data-look="iitian"]{ --sans:"Anek Latin",system-ui,sans-serif; --serif:"Anek Latin",system-ui,sans-serif; }
+  /* Three layers, topmost first: the double margin, the fifth-line rule, the
+     rules themselves. Every layer fades to transparent rather than laying an
+     opaque colour over part of the stage, which is the pairing that leaves a
+     seam mid-fade - test/stage-theme-fade.test.mjs checks exactly that. */
+  :root[data-look="iitian"] .stage{
+    background-image:
+      linear-gradient(90deg, transparent 0 64px, color-mix(in srgb, var(--accent) 55%, transparent) 64px 65px,
+        transparent 65px 68px, color-mix(in srgb, var(--accent) 30%, transparent) 68px 69px, transparent 69px),
+      repeating-linear-gradient(180deg, transparent 0 129px, color-mix(in srgb, var(--accent) 32%, transparent) 129px 130px),
+      repeating-linear-gradient(180deg, transparent 0 25px, color-mix(in srgb, var(--line) 75%, transparent) 25px 26px);
+    background-size:100% 100%,100% 130px,100% 26px;
+    background-color:var(--paper);
+  }
+  /* Squared chrome. No rule below declares background or color: the sweep in
+     test/color-contrast.test.mjs measures the winning background and text
+     through the cascade, so a look that repainted them would move every
+     pairing it touched. Borders, radii and tracking only. */
+  :root[data-look="iitian"] .nodebar{
+    font-weight:700; letter-spacing:0.03em;
+    border-radius:6px; border:1.5px solid var(--ink); box-shadow:none;
+  }
+  :root[data-look="iitian"] .side{border-right:1.5px solid var(--ink)}
+  :root[data-look="iitian"] .vf-card{border-radius:6px; border:1.5px solid var(--ink); box-shadow:var(--shadow-lg)}
+  :root[data-look="iitian"] .vf-card h2{font-weight:700; letter-spacing:0.05em; text-transform:uppercase}
+  :root[data-look="iitian"] .row-pop,
+  :root[data-look="iitian"] .picker,
+  :root[data-look="iitian"] .donate-card,
+  :root[data-look="iitian"] .export-pop,
+  :root[data-look="iitian"] .tpl-pop{border-radius:6px; border:1.5px solid var(--ink)}
+  :root[data-look="iitian"] .search-wrap{border-radius:6px; border:1.5px solid var(--ink)}
+  :root[data-look="iitian"] .toast{border-radius:6px; border:1.5px solid var(--ink); font-weight:600}
+  :root[data-look="iitian"] .new-map{border:1.5px dashed var(--ink-soft); border-radius:6px}
+  /* The breadcrumb becomes a shell path: a tilde root, square tracked crumbs
+     and a solidus instead of the chevron. Geometry and type only - neither
+     crumb rule declares background or color, so the base `.bc-crumb:hover`
+     pair is still what test/breadcrumb-contrast.test.mjs measures here. */
+  :root[data-look="iitian"] .breadcrumb{
+    border-radius:0; border:1.5px solid var(--ink);
+    box-shadow:none; padding:2px 5px; gap:0;
+    font-family:var(--sans);
+  }
+  :root[data-look="iitian"] .breadcrumb::before{
+    content:"~"; color:var(--ink); font-weight:700; font-size:12px; margin:0 5px 0 1px;
+  }
+  :root[data-look="iitian"] .breadcrumb .bc-crumb{
+    border-radius:0; padding:3px 6px;
+    font-size:11px; letter-spacing:0.07em; text-transform:uppercase;
+    font-variant-numeric:tabular-nums;
+  }
+  :root[data-look="iitian"] .breadcrumb .bc-crumb.current{font-weight:700}
+  :root[data-look="iitian"] .breadcrumb .bc-sep{font-size:0; margin:0 3px; opacity:.75}
+  :root[data-look="iitian"] .breadcrumb .bc-sep::after{content:"/"; font-size:12px; font-weight:600}
+  /* The minimap reads as an instrument panel: a squared ink frame with an
+     accent top edge, a centre crosshair and viewfinder brackets in the two
+     pseudo layers. The box keeps the base background so the sweep still
+     measures the same surface it does for every other look. */
+  :root[data-look="iitian"] .minimap{
+    position:relative;
+    border-radius:0; border:1.5px solid var(--ink);
+    border-top:2px solid color-mix(in srgb, var(--accent) 65%, var(--ink));
+    box-shadow:none;
+  }
+  :root[data-look="iitian"] .minimap::before{
+    content:""; position:absolute; inset:0; pointer-events:none; opacity:.5;
+    background:
+      linear-gradient(var(--accent),var(--accent)) 50% 0/1px 100% no-repeat,
+      linear-gradient(var(--accent),var(--accent)) 0 50%/100% 1px no-repeat;
+  }
+  :root[data-look="iitian"] .minimap::after{
+    content:""; position:absolute; inset:3px; pointer-events:none;
+    background:
+      linear-gradient(var(--accent),var(--accent)) 0 0/9px 1px no-repeat,
+      linear-gradient(var(--accent),var(--accent)) 0 0/1px 9px no-repeat,
+      linear-gradient(var(--accent),var(--accent)) 100% 0/9px 1px no-repeat,
+      linear-gradient(var(--accent),var(--accent)) 100% 0/1px 9px no-repeat,
+      linear-gradient(var(--accent),var(--accent)) 0 100%/9px 1px no-repeat,
+      linear-gradient(var(--accent),var(--accent)) 0 100%/1px 9px no-repeat,
+      linear-gradient(var(--accent),var(--accent)) 100% 100%/9px 1px no-repeat,
+      linear-gradient(var(--accent),var(--accent)) 100% 100%/1px 9px no-repeat;
+  }
 
 /* A sonar ping, because the static rings above are a DIAGRAM of sonar rather
      than sonar: the whole idea is a pulse. One ring expands from the centre and

@@ -44,7 +44,8 @@ describe('demo-map export fidelity', () => {
   test('export handles all demo node styles without throwing', async () => {
     // This test verifies the export code paths would not throw for demo nodes
     // We check that the required functions exist
-    const fns = loadFns(['pickContrast', 'mixHex', 'zebraDepth', 'drawFormattedText', 'drawNodeMath', 'containsMath'], {
+    const fns = loadFns(['pickContrast', 'mixHex', 'hex6', 'zebraDepth', 'drawFormattedText', 'drawNodeMath', 'containsMath'], {
+      _hex6Cache: new Map(),
       escapeHtml: s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])),
       sanitizeInlineHTML: s => String(s),
       gmindHtmlToInline: (html) => String(html),

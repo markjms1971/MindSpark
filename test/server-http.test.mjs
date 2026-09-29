@@ -162,3 +162,109 @@ describe('EXTRA_CONNECT_SRC', () => {
     assert.equal(js, readFileSync(join(ROOT, 'public', 'app.js'), 'utf8'), 'only the HTML is rewritten; scripts are served byte for byte');
   });
 });
+
+// readBody() used to build the body with `str += chunk`, decoding each network
+// chunk on its own, so a multi-byte character split across a chunk boundary
+// came back as two U+FFFD. Every map over one chunk (~64 KB) with emoji or
+// non-Latin text was silently corrupted on save.
+describe('self-hosted server - request bodies', () => {
+  test('a large non-ASCII map round-trips byte for byte', async () => {
+    const text = '😀 नमस्ते 你好 '.repeat(12000);   // ~250 KB, many chunk boundaries
+    const put = await json('PUT', '/api/maps/utf8big', { title: 'Ünïcödé ✓', nodes: { r: { id: 'r', text } } });
+    assert.equal(put.status, 200);
+    const got = await (await fetch(base + '/api/maps/utf8big')).json();
+    assert.equal(got.nodes.r.text.includes('�'), false, 'replacement characters crept in');
+    assert.equal(got.nodes.r.text, text);
+    assert.equal(got.title, 'Ünïcödé ✓');
+  });
+
+  test('malformed JSON is the client\'s error (400), not a server error', async () => {
+    const r = await fetch(base + '/api/maps/badjson', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{"id":' });
+    assert.equal(r.status, 400);
+  });
+
+  test('an oversized body is still refused', async () => {
+    const r = await fetch(base + '/api/maps/huge', { method: 'PUT', body: 'x'.repeat(8e6 + 10) }).catch(e => e);
+    assert.ok(r instanceof Error || r.status >= 400, 'an 8 MB+ body must not be accepted');
+  });
+});
+
+// server.js carries its own buildMapFromSpec (it is CommonJS and ships inside
+// the pkg binary; the Worker's copy is ESM). The server's copy had fallen
+// behind: imports through a self-hosted server dropped list/format/task/marker
+// fields, citation.source, root-branch balancing and layoutConfig. Pin the two
+// to the same output.
+describe('self-hosted server - /api/import matches the Worker', () => {
+  test('the same spec produces the same nodes, links and layout knobs', async () => {
+    const { buildMapFromSpec } = await import('../worker/import-core.js');
+    const spec = {
+      title: 'Parity', color: '#3a6ea5',
+      nodes: [
+        { id: 'r', text: 'Root', parent: null },
+        { id: 'a', text: 'A', parent: 'r', listType: 'ul', bold: true, italic: true, highlight: true },
+        { id: 'b', text: 'B', parent: 'r', align: 'right', task: 'done', marker: '  ⭐  ', tag: 7 },
+        { id: 'c', text: 'C', parent: 'r', collapsed: true, notes: 'n',
+          citation: { authors: ['X', 'Y'], year: 2020, title: 'T', source: 'Nature', doi: '10.1/x' } },
+        { id: 'd', text: 'D', parent: 'b', citation: { arxiv: '2101.00001' } },
+        { id: 'e', text: 'E', parent: 'r', task: 'nope', marker: 'too long', listType: 'x' },
+      ],
+      links: [{ from: 'a', to: 'd', label: 'rel' }, { from: 'a', to: 'missing' }],
+      layoutConfig: { timeline: { gap: 9999, stem: -5, indent: 12.4, alternate: true, start: 'below' } },
+    };
+    const r = await json('POST', '/api/import', spec);
+    assert.equal(r.status, 201);
+    const { id } = await r.json();
+    const saved = await (await fetch(base + '/api/maps/' + id)).json();
+    const worker = buildMapFromSpec(spec);
+    assert.deepEqual(saved.nodes, worker.nodes);
+    assert.deepEqual(saved.links, worker.links);
+    assert.deepEqual(saved.layoutConfig, worker.layoutConfig);
+    assert.equal(saved.rootId, worker.rootId);
+    assert.equal(saved.title, worker.title);
+    assert.equal(saved.color, worker.color);
+    // server-only bookkeeping is unchanged
+    assert.equal(saved._import, true);
+    assert.equal(saved.titleAuto, false);
+    assert.equal(typeof saved.updated, 'number');
+  });
+});
+
+// A port already in use used to crash with a raw stack trace. It now exits 1 and
+// says what happened.
+describe('self-hosted server - startup', () => {
+  test('a busy port gives a readable error and exit code 1', async () => {
+    const port = new URL(base).port;
+    const second = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', join(ROOT, 'server.js')], {
+      env: { ...process.env, PORT: port, DB_PATH: join(dir, 'second.db') }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let err = ''; second.stderr.on('data', d => { err += d; });
+    const code = await new Promise(r => second.once('exit', r));
+    assert.equal(code, 1);
+    assert.match(err, /already in use/);
+  });
+});
+
+// Autosave runs after every short pause in editing, and a version per save let the
+// 50-version cap cover only the last few minutes. Saves within a minute of the
+// newest version now refine it; a later save starts a new one.
+describe('self-hosted server - version history', () => {
+  const put = (id, updated, text) => json('PUT', '/api/maps/' + id, { title: 'V', updated, nodes: { r: { id: 'r', text } } });
+  const versions = async id => (await (await fetch(base + '/api/maps/' + id + '/versions')).json()).length;
+  test('saves inside a minute share one version, holding the latest content', async () => {
+    const t0 = 1_700_000_000_000;
+    await put('vh1', t0, 'one');
+    await put('vh1', t0 + 10_000, 'two');
+    await put('vh1', t0 + 20_000, 'three');
+    assert.equal(await versions('vh1'), 1);
+    const list = await (await fetch(base + '/api/maps/vh1/versions')).json();
+    const v = await (await fetch(base + '/api/maps/vh1/versions/' + list[0].ts)).json();
+    assert.equal(v.nodes.r.text, 'three');
+  });
+  test('a save a minute or more later starts a new version', async () => {
+    const t0 = 1_700_000_000_000;
+    await put('vh2', t0, 'one');
+    await put('vh2', t0 + 61_000, 'two');
+    await put('vh2', t0 + 125_000, 'three');
+    assert.equal(await versions('vh2'), 3);
+  });
+});

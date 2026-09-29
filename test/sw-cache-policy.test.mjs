@@ -83,6 +83,14 @@ describe('service worker caching policy', () => {
       });
     }
 
+    // Everything else that is not a fixed-forever file: animation art and
+    // stickers used to be cache-first and so never updated for a client.
+    for (const p of ['/animations/stickers/spark.svg', '/animations/plumber-octo.jpg', '/export_check.png']) {
+      test(`${p} prefers the network (not an immutable asset)`, async () => {
+        assert.equal(await resolve(p), 'NETWORK');
+      });
+    }
+
     test('a navigation prefers the network', async () => {
       assert.equal(await resolve('/', { navigate: true }), 'NETWORK');
     });

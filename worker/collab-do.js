@@ -4,7 +4,7 @@
 // late joiner can sync immediately. It never parses the map model itself.
 // Uses the WebSocket Hibernation API so idle rooms cost nothing.
 import { DurableObject } from 'cloudflare:workers';
-import { handleCollabHttp, socketIdentity, socketAllowed } from './collab-http.js';
+import { handleCollabHttp, socketIdentity, socketAllowed, isRelayedPeerMessage } from './collab-http.js';
 
 const COLORS = ['#e0613a','#3a6ea5','#2e9e6b','#9a5bb8','#d0902e','#c14d7a','#1f8a8a','#b8513a'];
 
@@ -58,6 +58,7 @@ export class CollabRoom extends DurableObject {
       this._broadcast(ws, { t:'name', id: me.id, name });
       return;
     }
+    if (!isRelayedPeerMessage(m)) return;                          // welcome/join/leave/name are the room's to send, never a peer's
     if (m.t === 'op' && !(await mayWrite())) return;         // a viewer's edits go nowhere
     m.from = me.id;                                          // tag ops/cursor with sender, relay to others
     this._broadcast(ws, m);

@@ -17,7 +17,10 @@
  *     quote-providers.json, words.json and word-providers.json have fixed URLs too,
  *     so serving them cache-first pinned every client to whatever shipped the day it first
  *     loaded them - the same trap as app.js, one size down.
- *   - Only genuinely immutable assets (icons) stay cache-first.
+ *   - Only genuinely immutable assets (the app icons, the donation QR) stay
+ *     cache-first. Every other asset - animation art, stickers, images - is
+ *     network-first too: it used to fall into the cache-first branch and stay
+ *     whatever version a client first saw, forever.
  *   - /api/* and cross-origin requests are never touched. Map data lives in
  *     SQLite or the user's own GitHub repo; serving a stale copy of it would
  *     be actively harmful, not merely unhelpful.
@@ -86,8 +89,11 @@ self.addEventListener('fetch', event => {
   // navigation or an explicit Accept: text/html, so a plain fetch('./index.html')
   // would otherwise fall through to the cache-first branch below.
   const isAppCode = /\.(?:html|js|mjs|css|json|webmanifest)$/.test(url.pathname);
+  // Files that never change in place. Anything not named here is treated like
+  // code: fetched fresh, the cache only an offline fallback.
+  const isImmutable = /\/(?:icon-[\w-]+|upi-qr)\.png$/.test(url.pathname);
 
-  if (isHTML || isAppCode) {
+  if (isHTML || isAppCode || !isImmutable) {
     // Network-first: always prefer a fresh shell, fall back when offline.
     event.respondWith((async () => {
       try {
@@ -109,7 +115,7 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Immutable assets only (icons): cache-first is safe because their
+  // Immutable assets only (icons, the QR): cache-first is safe because their
   // contents never change without the filename changing.
   event.respondWith((async () => {
     const cached = await caches.match(request);
